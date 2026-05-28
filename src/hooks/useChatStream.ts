@@ -2,7 +2,7 @@
 
 import { useRef, useCallback } from 'react';
 import { useChatStore } from '@/lib/store';
-import type { ChatMessage, ToolCall, StreamEvent, Plan, Subtask, PerformanceStats, SkillInfo, AgentActivity } from '@/types';
+import type { ChatMessage, ToolCall, StreamEvent, Plan, Subtask, PerformanceStats, SkillInfo, AgentActivity, AttachedFile } from '@/types';
 import { toast } from 'sonner';
 
 function generateId(): string {
@@ -26,9 +26,9 @@ export function useChatStream() {
   const assistantIdRef = useRef<string | null>(null);
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, attachments: AttachedFile[] = []) => {
       const trimmed = content.trim();
-      if (!trimmed) return;
+      if (!trimmed && attachments.length === 0) return;
       if (useChatStore.getState().isStreaming) return;
 
       const userMessage: ChatMessage = {
@@ -36,6 +36,7 @@ export function useChatStream() {
         role: 'user',
         content: trimmed,
         timestamp: Date.now(),
+        attachments: attachments.length > 0 ? attachments : undefined,
       };
 
       const assistantId = generateId();
@@ -152,6 +153,7 @@ export function useChatStream() {
                 const endData = event.data as {
                   name: string;
                   output: string;
+                  duration?: number;
                 };
                 // Toast for file-related tools
                 if (endData.name === 'write_file') {
@@ -172,10 +174,12 @@ export function useChatStream() {
                       ...currentToolCalls[idx],
                       status: 'completed',
                       output: endData.output,
+                      duration: endData.duration,
                     };
                     updateToolCallInHistory(lastTool.id, {
                       status: 'completed',
                       output: endData.output,
+                      duration: endData.duration,
                     });
                     updateMessage(assistantId, {
                       toolCalls: [...currentToolCalls],
