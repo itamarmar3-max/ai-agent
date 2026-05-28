@@ -90,10 +90,10 @@ export async function POST(request: Request) {
         onToolStart(toolName: string, input: Record<string, unknown>) {
           sendEvent({ type: 'tool_start', data: { name: toolName, input, timestamp: Date.now() } });
         },
-        onToolEnd(toolName: string, output: string) {
-          // Record successful tool call for health monitoring
-          healthMonitor.recordToolCall(toolName, 0, true);
-          sendEvent({ type: 'tool_end', data: { name: toolName, output, timestamp: Date.now() } });
+        onToolEnd(toolName: string, output: string, duration?: number) {
+          // Record successful tool call (with real duration) for health monitoring
+          healthMonitor.recordToolCall(toolName, duration ?? 0, true);
+          sendEvent({ type: 'tool_end', data: { name: toolName, output, duration, timestamp: Date.now() } });
         },
         onToolError(toolName: string, error: string) {
           // Record failed tool call for health monitoring
@@ -126,6 +126,10 @@ export async function POST(request: Request) {
         },
         onAgentActivity(activity) {
           sendEvent({ type: 'agent_activity', data: activity });
+        },
+        onRetry(info) {
+          // Surface transient LLM-call retries to the UI (rate limits, 5xx, …)
+          sendEvent({ type: 'retry', data: info });
         },
         connectedProject: body.project as string | null,
         onDone() {

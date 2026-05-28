@@ -34,6 +34,17 @@ import { retrieveContext } from './rag';
 
 export type AgentMode = 'quick' | 'smart' | 'deep';
 
+// Tools whose output is genuinely an image. We must NOT treat any output that
+// merely starts with "http" as an image — web_search / url_metadata / fetch_api
+// routinely return text beginning with a URL.
+const IMAGE_PRODUCING_TOOLS = new Set(['generate_image', 'webpage_screenshot']);
+const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|svg|avif|bmp)(?:\?\S*)?$/i;
+
+function isImageOutput(toolName: string, output: string): boolean {
+  if (output.startsWith('data:image/')) return true;
+  return IMAGE_PRODUCING_TOOLS.has(toolName) && IMAGE_URL_RE.test(output.trim());
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -52,7 +63,7 @@ export interface AgentConfig {
   githubToken?: string;
   onToken?: (token: string) => void;
   onToolStart?: (toolName: string, input: Record<string, unknown>) => void;
-  onToolEnd?: (toolName: string, output: string) => void;
+  onToolEnd?: (toolName: string, output: string, duration?: number) => void;
   onToolError?: (toolName: string, error: string) => void;
   onImage?: (imageData: string) => void;
   onDone?: () => void;
@@ -74,6 +85,11 @@ export interface AgentConfig {
   // NEW: response mode — 'quick' skips planning, 'smart' is default, 'deep' enables multi-agent
   mode?: AgentMode;
   onIntent?: (intent: IntentResult) => void;
+  // Isolates per-session memory + security state (rate/call limits). When
+  // omitted a fresh id is generated per run so limits never leak between
+  // conversations or accumulate globally for the life of the process.
+  sessionId?: string;
+  onRetry?: (info: { attempt: number; maxRetries: number; reason: string; waitMs?: number }) => void;
 }
 
 export interface AgentResult {
@@ -120,11 +136,17 @@ export async function runAgent(
   const sessionStartTime = Date.now();
   const lastUserMessage = userMessages[userMessages.length - 1]?.content || '';
 
+  // Per-run session id — isolates memory + security state so tool-call/rate
+  // limits and short-term memory never leak across conversations or pile up
+  // globally for the lifetime of the server process.
+  const sessionId = config.sessionId ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const hasAttachments = /\[(?:Image attached|File):/.test(lastUserMessage);
+
   // ---- 0a. Intent classification (zero-latency heuristic) ----------------
   // Decides whether we need the full planning/decomposition/multi-agent
   // pipeline or can take a fast conversational path. Driven by an explicit
   // `mode` override when the UI requests one.
-  const intent = classifyIntent(lastUserMessage);
+  const intent = classifyIntent(lastUserMessage, hasAttachments);
   config.onIntent?.(intent);
 
   const mode: AgentMode = config.mode ?? (
@@ -200,11 +222,15 @@ export async function runAgent(
     addDecision: (decision: string) => void;
     addFileCreated: (filePath: string) => void;
     getFullMemoryContext: () => Promise<string>;
+    setMemorySession: (id: string) => void;
+    summarizeMemory: () => void;
+    cleanupSession: (id: string) => void;
   } | null = null;
 
   if (enableMemory) {
     try {
       memoryModule = await import('./memory');
+      memoryModule.setMemorySession(sessionId);
       memoryContext = await memoryModule.initializeMemory();
       const fullCtx = await memoryModule.getFullMemoryContext();
       if (fullCtx) {
@@ -279,10 +305,15 @@ export async function runAgent(
     checkToolCallLimit: () => { allowed: boolean; reason?: string };
     checkRateLimit: () => { allowed: boolean; reason?: string };
     checkInputSafety: (tool: string, input: Record<string, unknown>) => { allowed: boolean; reason?: string; sanitizedInput?: Record<string, unknown> };
+    setSecuritySession: (id: string) => void;
+    cleanupSession: (id: string) => void;
   } | null = null;
 
   try {
     securityModule = await import('./security');
+    // Scope rate/call limits to this run so the 200-call cap is per
+    // conversation, not a process-global ceiling that never resets.
+    securityModule.setSecuritySession(sessionId);
   } catch {
     // Security module failed — continue without checks (non-critical for dev)
   }
@@ -404,6 +435,26 @@ export async function runAgent(
     result.subtasks = decomposition?.subtasks;
   } catch { /* non-critical */ }
 
+  // Retry the LLM call on transient API failures (429 / 5xx / network /
+  // timeout). Transient failures almost always occur before any token has
+  // streamed, so retrying does not duplicate already-shown text.
+  const invokeWithRetry = async (): Promise<AIMessage> => {
+    const maxApiRetries = 4;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return (await llm.invoke(messages)) as AIMessage;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const retriable =
+          /\b(429|5\d\d)\b|rate.?limit|timeout|timed out|temporarily|overloaded|network|fetch failed|econn|socket hang up/i.test(msg);
+        if (!retriable || attempt >= maxApiRetries) throw err;
+        const waitMs = Math.min(1000 * 2 ** attempt + Math.floor(Math.random() * 500), 16000);
+        config.onRetry?.({ attempt: attempt + 1, maxRetries: maxApiRetries, reason: msg.slice(0, 160), waitMs });
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+    }
+  };
+
   try {
     while (iteration < maxIterations) {
       iteration++;
@@ -454,9 +505,18 @@ export async function runAgent(
 
       // ---- LLM invoke with timing -----------------------------------------
       const invokeStart = Date.now();
-      const response = await llm.invoke(messages);
+      const response = await invokeWithRetry();
       const invokeDuration = Date.now() - invokeStart;
       responseTimes.push(invokeDuration);
+
+      // Accumulate token usage (was previously always 0). Prefer the
+      // provider's usage metadata; fall back to a char/4 estimate.
+      const usage = (response as { usage_metadata?: { total_tokens?: number } }).usage_metadata;
+      if (usage?.total_tokens) {
+        totalTokens += usage.total_tokens;
+      } else if (typeof response.content === 'string') {
+        totalTokens += Math.ceil(response.content.length / 4);
+      }
 
       // If no tool calls, we are done — collect final text.
       if (!response.tool_calls || response.tool_calls.length === 0) {
@@ -583,13 +643,13 @@ export async function runAgent(
             // Track performance
             toolUsageCounts[toolName] = (toolUsageCounts[toolName] ?? 0) + 1;
 
-            // Detect image data in output.
-            if (outputStr.startsWith('data:image/') || outputStr.startsWith('http')) {
+            // Detect image data in output (only for image-producing tools).
+            if (isImageOutput(toolName, outputStr)) {
               result.images.push(outputStr);
               config.onImage?.(outputStr);
             }
 
-            config.onToolEnd?.(toolName, outputStr);
+            config.onToolEnd?.(toolName, outputStr, toolDuration);
             result.toolCalls.push({ name: toolName, input: toolInput, output: outputStr, duration: toolDuration, retryCount });
 
             messages.push(
@@ -697,13 +757,13 @@ export async function runAgent(
                 toolUsageCounts[pr.toolName] = (toolUsageCounts[pr.toolName] ?? 0) + 1;
 
                 if (pr.success) {
-                  // Detect image data in output.
-                  if (pr.output.startsWith('data:image/') || pr.output.startsWith('http')) {
+                  // Detect image data in output (only for image-producing tools).
+                  if (isImageOutput(pr.toolName, pr.output)) {
                     result.images.push(pr.output);
                     config.onImage?.(pr.output);
                   }
 
-                  config.onToolEnd?.(pr.toolName, pr.output);
+                  config.onToolEnd?.(pr.toolName, pr.output, pr.duration);
                   result.toolCalls.push({ name: pr.toolName, input: group[i].input, output: pr.output, duration: pr.duration });
                 } else {
                   config.onToolError?.(pr.toolName, pr.error ?? pr.output);
@@ -742,7 +802,7 @@ export async function runAgent(
 
                   toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] ?? 0) + 1;
 
-                  if (outputStr.startsWith('data:image/') || outputStr.startsWith('http')) {
+                  if (isImageOutput(tc.name, outputStr)) {
                     result.images.push(outputStr);
                     config.onImage?.(outputStr);
                   }
@@ -763,6 +823,12 @@ export async function runAgent(
             config.onError?.(`Parallel execution error: ${errMsg}`);
           }
         }
+      }
+
+      // Keep short-term memory bounded so long autonomous runs don't grow it
+      // without limit (and don't bloat the injected context).
+      if (memoryModule) {
+        try { memoryModule.summarizeMemory(); } catch { /* non-critical */ }
       }
 
       // ---- Update progress ------------------------------------------------
@@ -803,6 +869,11 @@ export async function runAgent(
       await memoryModule.saveSessionMemory();
     } catch { /* non-critical */ }
   }
+
+  // Release per-session memory + security state so it cannot accumulate for
+  // the lifetime of the server process.
+  try { memoryModule?.cleanupSession(sessionId); } catch { /* non-critical */ }
+  try { securityModule?.cleanupSession(sessionId); } catch { /* non-critical */ }
 
   // Calculate performance stats
   const sessionDuration = Date.now() - sessionStartTime;

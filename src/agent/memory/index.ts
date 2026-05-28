@@ -12,6 +12,8 @@ export {
   clearMemory,
   shouldSummarize,
   summarizeMemory,
+  setMemorySession,
+  cleanupSession,
 } from './short_term';
 
 export type { ShortTermMemory } from './short_term';

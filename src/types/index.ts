@@ -49,6 +49,7 @@ export interface ChatMessage {
   timestamp: number;
   toolCalls?: ToolCall[];
   images?: string[]; // base64 images embedded in message
+  attachments?: AttachedFile[]; // user-uploaded files, rendered as cards
   plan?: Plan;                  // NEW: the plan for this response
   subtasks?: Subtask[];         // NEW: task decomposition
 }

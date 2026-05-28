@@ -67,49 +67,44 @@ export const runJavascriptTool = tool(
       `;
 
       const context = createContext(sandbox);
+      const script = new Script(wrappedCode, { filename: 'sandbox.js' });
 
-      // Run with a 10-second timeout
-      const result = await new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error('Execution timed out after 10 seconds'));
-        }, 10000);
+      try {
+        // vm's `timeout` aborts *synchronous* runaway code (e.g. `while(true){}`).
+        // A bare setTimeout cannot do this — the blocked event loop never runs it.
+        script.runInContext(context, { timeout: 10000, breakOnSigint: true });
 
-        try {
-          const script = new Script(wrappedCode, {
-            filename: 'sandbox.js',
-          });
-          script.runInContext(context);
-          clearTimeout(timer);
+        const elapsed = Date.now() - startTime;
+        let outputStr = '';
 
-          const elapsed = Date.now() - startTime;
-          let outputStr = '';
-
-          if (logs.length > 0) {
-            outputStr += `Console output:\n${logs.join('\n')}\n\n`;
-          }
-
-          if (sandbox.result !== undefined) {
-            outputStr += `Return value: ${JSON.stringify(sandbox.result, null, 2)}\n`;
-          }
-
-          outputStr += `Execution completed in ${elapsed}ms.`;
-          resolve(outputStr.trim());
-        } catch (err) {
-          clearTimeout(timer);
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const elapsed = Date.now() - startTime;
-
-          let outputStr = '';
-          if (logs.length > 0) {
-            outputStr += `Console output before error:\n${logs.join('\n')}\n\n`;
-          }
-
-          outputStr += `Error: ${errMsg}\nExecution failed after ${elapsed}ms.`;
-          resolve(outputStr.trim());
+        if (logs.length > 0) {
+          outputStr += `Console output:\n${logs.join('\n')}\n\n`;
         }
-      });
 
-      return result;
+        if (sandbox.result !== undefined) {
+          let serialized: string;
+          try {
+            serialized = JSON.stringify(sandbox.result, null, 2);
+          } catch {
+            serialized = String(sandbox.result);
+          }
+          outputStr += `Return value: ${serialized}\n`;
+        }
+
+        outputStr += `Execution completed in ${elapsed}ms.`;
+        return outputStr.trim();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const elapsed = Date.now() - startTime;
+
+        let outputStr = '';
+        if (logs.length > 0) {
+          outputStr += `Console output before error:\n${logs.join('\n')}\n\n`;
+        }
+
+        outputStr += `Error: ${errMsg}\nExecution failed after ${elapsed}ms.`;
+        return outputStr.trim();
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (logs.length > 0) {

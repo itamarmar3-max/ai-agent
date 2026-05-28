@@ -24,18 +24,9 @@ import {
   Hexagon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useState, useCallback, useSyncExternalStore } from 'react';
+import { useState } from 'react';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useChatStream } from '@/hooks/useChatStream';
-
-function useIsMounted() {
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return () => {};
-  }, []);
-  const getSnapshot = () => true;
-  const getServerSnapshot = () => false;
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-}
 
 type TabType = 'tools' | 'files' | 'project';
 

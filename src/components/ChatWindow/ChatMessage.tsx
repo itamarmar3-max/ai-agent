@@ -9,7 +9,20 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { AttachmentCards } from './AttachmentCards';
 import type { ChatMessage as ChatMessageType, ToolCall } from '@/types';
+
+/**
+ * Attachments are inlined into the model-visible content (so the LLM and
+ * replayed history see file contents), but for display we show them as cards
+ * and strip the raw inlined blocks from the text bubble.
+ */
+function stripInlinedAttachments(content: string): string {
+  return content
+    .replace(/\[Image attached: [^\]]*\]\n?/g, '')
+    .replace(/\[File: [^\]]*\]\n```[\s\S]*?```\n*/g, '')
+    .trim();
+}
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -198,7 +211,11 @@ function CopyButton({ text }: { text: string }) {
 
 function ChatMessageComponent({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
-  const hasContent = message.content.length > 0;
+  const hasAttachments = !!(message.attachments && message.attachments.length > 0);
+  const displayContent = isUser && hasAttachments
+    ? stripInlinedAttachments(message.content)
+    : message.content;
+  const hasContent = displayContent.length > 0;
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
   const hasImages = message.images && message.images.length > 0;
 
@@ -214,6 +231,13 @@ function ChatMessageComponent({ message }: ChatMessageProps) {
     >
       {/* Content wrapper */}
       <div className={cn('flex flex-col gap-2', isUser ? 'items-end max-w-[70%]' : 'w-full')}>
+        {/* Attachment cards (user uploads) */}
+        {hasAttachments && (
+          <div className={cn('w-full', isUser && 'flex justify-end')}>
+            <AttachmentCards attachments={message.attachments!} />
+          </div>
+        )}
+
         {/* Plan panel (before message bubble) */}
         {message.plan && (
           <div
@@ -268,7 +292,7 @@ function ChatMessageComponent({ message }: ChatMessageProps) {
                   border: 'none',
                 }}
               >
-                <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                <p className="whitespace-pre-wrap break-words">{displayContent}</p>
               </div>
             ) : (
               <div className="flex-1 min-w-0">

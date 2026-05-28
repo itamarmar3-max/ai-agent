@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { useChatStore } from '@/lib/store';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import type { AttachedFile } from '@/types';
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'json', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'java', 'kt',
@@ -36,7 +37,7 @@ function formatBytes(n: number): string {
 }
 
 interface ChatInputProps {
-  onSend: (message: string) => void;
+  onSend: (message: string, attachments: AttachedFile[]) => void;
   onStop: () => void;
 }
 
@@ -214,9 +215,13 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
     if (!trimmed && attachedFiles.length === 0) return;
     if (isStreaming) return;
 
+    // Snapshot attachments before clearing so they can be (a) inlined into the
+    // model-visible text and (b) rendered as cards on the user's message.
+    const sentAttachments = attachedFiles.slice();
+
     let messageContent = trimmed;
-    if (attachedFiles.length > 0) {
-      const fileParts = attachedFiles
+    if (sentAttachments.length > 0) {
+      const fileParts = sentAttachments
         .map((f) =>
           f.type === 'image'
             ? `[Image attached: ${f.name}]\n`
@@ -227,9 +232,9 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
       clearAttachedFiles();
     }
 
-    if (!messageContent.trim()) return;
+    if (!messageContent.trim() && sentAttachments.length === 0) return;
 
-    onSend(messageContent);
+    onSend(messageContent, sentAttachments);
     setInput('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';

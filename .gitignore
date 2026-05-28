@@ -52,3 +52,15 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Runtime workspace & upload/download artifacts (user data — never commit)
+/workspace/
+/src/workspace/
+/upload/
+/audit-workspace/
+*.tar
+
+# Lockfiles — this project resolves deps at install time (no committed lockfile)
+/package-lock.json
+/yarn.lock
+/pnpm-lock.yaml
