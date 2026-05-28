@@ -35,7 +35,8 @@ whole app now ships with **a real dark mode** (toggle in the top bar).
 - **Zustand** for client state
 - **Sonner** + **next-themes** for toasts and theming
 - **shadcn/ui** for the primitive component layer
-- **Vectra** for local vector search (RAG)
+- Local **keyword / TF-cosine retrieval** for project RAG (in-memory, no
+  external embedding service required)
 - **Puppeteer**, **pdf-parse**, **cheerio**, **mathjs**, **jszip**,
   **sharp** for the tool layer
 
@@ -96,7 +97,7 @@ src/
 | `Auto`  | Default — let the agent decide           | Runs the intent classifier and picks the best mode                |
 | `Quick` | Greetings, single short questions        | Skips planner, decomposition, multi-agent, RAG; caps at 3 loops   |
 | `Smart` | Most real tasks                          | Enables planner + memory; decomposition only when needed          |
-| `Deep`  | Complex multi-step work, refactors       | Adds multi-agent orchestrator (planner/executor/reviewer)         |
+| `Deep`  | Complex multi-step work, refactors       | Raises the iteration budget, runs task decomposition, and surfaces planner/executor/reviewer activity alongside the main loop |
 
 The classifier is heuristic and language-aware (English and Hebrew). It
 considers length, action verbs, multi-step hints, and attachments to choose
@@ -145,7 +146,9 @@ planning. Switch to **Deep** for the heaviest tasks.
 
 Drop a `.ts` file, a `.png` image, or paste an image from the clipboard into
 the input. They appear as chips with size and an icon. Up to 8 attachments;
-text is capped at 200 KB, images at 4 MB.
+text is capped at 200 KB, images at 4 MB. Once sent, attachments render on
+your message as **cards** — a thumbnail (click to zoom) for images, an icon
+plus extension badge for text files.
 
 ZIP archives go through the folder-archive icon and become a **connected
 project** (indexed for RAG).
