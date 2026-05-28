@@ -59,3 +59,8 @@ server.log
 /upload/
 /audit-workspace/
 *.tar
+
+# Lockfiles — this project resolves deps at install time (no committed lockfile)
+/package-lock.json
+/yarn.lock
+/pnpm-lock.yaml
