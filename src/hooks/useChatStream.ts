@@ -79,6 +79,10 @@ export function useChatStream() {
             settings: useChatStore.getState().settings,
             skill: useChatStore.getState().manualSkill,
             project: useChatStore.getState().connectedProject || null,
+            mode:
+              useChatStore.getState().responseMode === 'auto'
+                ? undefined
+                : useChatStore.getState().responseMode,
           }),
           signal: abortController.signal,
         });
@@ -401,6 +405,12 @@ export function useChatStream() {
               case 'health_update': {
                 const healthData = event.data as import('@/types').HealthMetrics;
                 useChatStore.getState().setHealthMetrics(healthData);
+                break;
+              }
+
+              case 'intent': {
+                const intentData = event.data as { intent: string; reason: string };
+                useChatStore.getState().setLastIntent(intentData);
                 break;
               }
             }

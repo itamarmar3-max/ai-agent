@@ -1,42 +1,48 @@
-import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
-import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
+import type { Metadata } from 'next';
+import { Inter, JetBrains_Mono } from 'next/font/google';
+import './globals.css';
+import { Toaster } from '@/components/ui/sonner';
+import { ThemeProvider } from '@/components/ThemeProvider';
 
 const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-  display: "swap",
-  weight: ["300", "400", "500", "600", "700"],
+  subsets: ['latin'],
+  variable: '--font-inter',
+  display: 'swap',
+  weight: ['300', '400', '500', '600', '700'],
 });
 
 const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-jetbrains-mono",
-  display: "swap",
-  weight: ["400", "500"],
+  subsets: ['latin'],
+  variable: '--font-jetbrains-mono',
+  display: 'swap',
+  weight: ['400', '500'],
 });
 
 export const metadata: Metadata = {
-  title: "AI Agent Builder - Autonomous AI Agent System",
-  description: "A local AI agent with 20 tools for web search, file management, code execution, image generation, and more. Built with Next.js, LangChain.js, and Tailwind CSS.",
-  keywords: ["AI Agent", "LangChain", "Next.js", "TypeScript", "Tool Calling", "AI Assistant"],
-  authors: [{ name: "AI Agent Builder" }],
-  icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },
+  title: 'AI Agent — Autonomous Workspace',
+  description:
+    'A local AI agent with 20+ tools for web search, file management, code generation, image generation, GitHub integration, and RAG retrieval over your projects.',
+  keywords: ['AI Agent', 'LangChain', 'Next.js', 'TypeScript', 'Tool Calling', 'AI Assistant', 'RAG'],
+  authors: [{ name: 'AI Agent Builder' }],
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${jetbrainsMono.variable} antialiased bg-background text-foreground`}>
-        {children}
-        <Toaster />
+      <body
+        className={`${inter.variable} ${jetbrainsMono.variable} antialiased bg-background text-foreground`}
+      >
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+          <Toaster position="bottom-right" richColors closeButton />
+        </ThemeProvider>
       </body>
     </html>
   );

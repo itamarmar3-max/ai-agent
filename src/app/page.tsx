@@ -9,6 +9,7 @@ import { ChatSidebar } from '@/components/ChatSidebar';
 import { ProjectExplorer } from '@/components/ProjectExplorer';
 import { CodeEditor } from '@/components/CodeEditor';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { Button } from '@/components/ui/button';
 import {
   Settings as SettingsIcon,
@@ -83,10 +84,9 @@ export default function Home() {
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: 'var(--ds-bg-primary)' }}>
       {/* Top bar */}
       <header
-        className="flex items-center justify-between h-11 px-3 shrink-0"
+        className="flex items-center justify-between h-11 px-3 shrink-0 glass"
         style={{
           borderBottom: '1px solid var(--ds-border)',
-          background: 'var(--ds-bg-secondary)',
         }}
       >
         <div className="flex items-center gap-2">
@@ -105,13 +105,10 @@ export default function Home() {
           </Button>
           <div className="flex items-center gap-2">
             <div
-              className="flex items-center justify-center w-6 h-6 rounded-md"
-              style={{
-                background: 'var(--ds-accent-glow)',
-                border: '1px solid rgba(37,99,235,0.2)',
-              }}
+              className="flex items-center justify-center w-7 h-7 rounded-lg shadow-sm"
+              style={{ background: 'var(--ds-gradient-accent)' }}
             >
-              <Hexagon className="w-3.5 h-3.5" style={{ color: 'var(--ds-accent)' }} />
+              <Hexagon className="w-4 h-4 text-white" strokeWidth={2} />
             </div>
             <span
               className="text-sm font-semibold tracking-tight"
@@ -139,13 +136,14 @@ export default function Home() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-[var(--ds-text-secondary)] hover:text-[var(--ds-error)] hover:bg-[rgba(220,38,38,0.08)]"
+              className="h-8 w-8 text-[var(--ds-text-secondary)] hover:text-[var(--ds-error)] hover:bg-[var(--ds-error-soft)]"
               onClick={clearMessages}
               title="Clear chat"
             >
               <Trash2 className="w-4 h-4" />
             </Button>
           )}
+          <ThemeToggle />
           <Button
             variant="ghost"
             size="icon"

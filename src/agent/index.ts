@@ -26,10 +26,13 @@ import {
 import { getAllTools } from './tools';
 import { detectSkill } from './skills';
 import { buildSystemPrompt } from './system_prompt';
+import { classifyIntent, type IntentResult } from './intent_classifier';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { Plan, Subtask, PerformanceStats, SkillInfo } from '@/types';
 import { compressIfNeeded } from './context/compressor';
 import { retrieveContext } from './rag';
+
+export type AgentMode = 'quick' | 'smart' | 'deep';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,6 +71,9 @@ export interface AgentConfig {
   onAgentActivity?: (activity: { role: string; status: string; description: string; timestamp: number }) => void;
   connectedProject?: string | null;
   interruptSignal?: { paused: boolean; redirect: string | null };
+  // NEW: response mode — 'quick' skips planning, 'smart' is default, 'deep' enables multi-agent
+  mode?: AgentMode;
+  onIntent?: (intent: IntentResult) => void;
 }
 
 export interface AgentResult {
@@ -111,11 +117,36 @@ export async function runAgent(
   userMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
   config: AgentConfig,
 ): Promise<AgentResult> {
-  const maxIterations = config.maxIterations ?? 15;
   const sessionStartTime = Date.now();
-
-  // ---- 0. Detect skill (BEFORE anything else) -----------------------------
   const lastUserMessage = userMessages[userMessages.length - 1]?.content || '';
+
+  // ---- 0a. Intent classification (zero-latency heuristic) ----------------
+  // Decides whether we need the full planning/decomposition/multi-agent
+  // pipeline or can take a fast conversational path. Driven by an explicit
+  // `mode` override when the UI requests one.
+  const intent = classifyIntent(lastUserMessage);
+  config.onIntent?.(intent);
+
+  const mode: AgentMode = config.mode ?? (
+    intent.intent === 'smalltalk' ? 'quick' :
+    intent.intent === 'task' && intent.needsMultiAgent ? 'deep' :
+    'smart'
+  );
+
+  // Quick mode caps iterations aggressively — chat replies shouldn't loop.
+  const maxIterations = config.maxIterations ?? (
+    mode === 'quick' ? 3 :
+    mode === 'deep' ? 20 :
+    15
+  );
+
+  const enablePlanning      = mode !== 'quick' && intent.needsPlanning;
+  const enableDecomposition = mode === 'deep' || (mode === 'smart' && intent.needsDecomposition);
+  const enableMultiAgent    = mode === 'deep' && intent.needsMultiAgent;
+  const enableMemory        = mode !== 'quick';
+  const enableRAG           = mode !== 'quick' && !!config.connectedProject;
+
+  // ---- 0b. Detect skill (BEFORE anything else) ---------------------------
   const detectionResult = detectSkill(
     lastUserMessage,
     config.manualSkill ?? null,
@@ -171,49 +202,52 @@ export async function runAgent(
     getFullMemoryContext: () => Promise<string>;
   } | null = null;
 
-  try {
-    memoryModule = await import('./memory');
-    memoryContext = await memoryModule.initializeMemory();
-    const fullCtx = await memoryModule.getFullMemoryContext();
-    if (fullCtx) {
-      memoryContext = fullCtx;
+  if (enableMemory) {
+    try {
+      memoryModule = await import('./memory');
+      memoryContext = await memoryModule.initializeMemory();
+      const fullCtx = await memoryModule.getFullMemoryContext();
+      if (fullCtx) {
+        memoryContext = fullCtx;
+      }
+    } catch {
+      memoryContext = '';
     }
-  } catch {
-    // Memory init failed — continue without context (non-critical)
-    memoryContext = '';
   }
 
-  // ---- 2. Create plan (dynamic, non-blocking) ------------------------------
+  // ---- 2. Create plan (only when intent calls for it) ---------------------
   let plan: Plan | undefined;
-  try {
-    const planner = await import('./planner');
-    const lastMessage = userMessages[userMessages.length - 1]?.content || '';
-    plan = planner.createPlan(lastMessage, [...getAllTools().map(t => t.name)]);
-    config.onPlan?.(plan);
-  } catch {
-    // Planner failed — non-critical, continue without plan
+  if (enablePlanning) {
+    try {
+      const planner = await import('./planner');
+      plan = planner.createPlan(lastUserMessage, [...getAllTools().map(t => t.name)]);
+      config.onPlan?.(plan);
+    } catch {
+      // non-critical
+    }
   }
 
-  // ---- 2b. Multi-agent orchestration (non-blocking) --------------------
-  let orchestratorModule: any = null;
-  try {
-    orchestratorModule = await import('./multi_agent');
-    orchestratorModule.orchestratePlan(lastUserMessage, tools.map(t => t.name), {
-      onAgentActivity: (activity: any) => {
-        config.onAgentActivity?.(activity);
-      },
-      onPlanCreated: (plan: any) => {
-        config.onPlan?.(plan);
-      },
-      onStepUpdate: (subtask: any) => {
-        config.onSubtaskUpdate?.(subtask);
-      },
-    });
-  } catch {
-    // Multi-agent failed — non-critical
+  // ---- 2b. Multi-agent orchestration (deep mode only) ---------------------
+  if (enableMultiAgent) {
+    try {
+      const orchestratorModule = await import('./multi_agent');
+      orchestratorModule.orchestratePlan(lastUserMessage, tools.map(t => t.name), {
+        onAgentActivity: (activity: any) => {
+          config.onAgentActivity?.(activity);
+        },
+        onPlanCreated: (p: any) => {
+          config.onPlan?.(p);
+        },
+        onStepUpdate: (subtask: any) => {
+          config.onSubtaskUpdate?.(subtask);
+        },
+      });
+    } catch {
+      // non-critical
+    }
   }
 
-  // ---- 3. Task decomposition (dynamic, non-blocking) -----------------------
+  // ---- 3. Task decomposition (only when intent calls for it) --------------
   let decomposition: {
     mainTask: string;
     complexity: string;
@@ -226,17 +260,18 @@ export async function runAgent(
     formatDecompositionForLLM: (d: any) => string;
   } | null = null;
 
-  try {
-    decompositionModule = await import('./task_decomposer');
-    const lastMessage = userMessages[userMessages.length - 1]?.content || '';
-    decomposition = decompositionModule.decomposeTask(lastMessage);
-    if (decomposition) {
-      for (const st of decomposition.subtasks) {
-        config.onSubtaskUpdate?.(st);
+  if (enableDecomposition) {
+    try {
+      decompositionModule = await import('./task_decomposer');
+      decomposition = decompositionModule.decomposeTask(lastUserMessage);
+      if (decomposition) {
+        for (const st of decomposition.subtasks) {
+          config.onSubtaskUpdate?.(st);
+        }
       }
+    } catch {
+      // non-critical
     }
-  } catch {
-    // Decomposition failed — non-critical
   }
 
   // ---- 4. Security (dynamic) ----------------------------------------------
@@ -252,11 +287,11 @@ export async function runAgent(
     // Security module failed — continue without checks (non-critical for dev)
   }
 
-  // ---- 4b. RAG retrieval (if project is connected) -----------------------
+  // ---- 4b. RAG retrieval (if project is connected and mode allows) -------
   let ragContext = '';
-  if (config.connectedProject) {
+  if (enableRAG) {
     try {
-      const ragResult = await retrieveContext(lastUserMessage, config.connectedProject, 5);
+      const ragResult = await retrieveContext(lastUserMessage, config.connectedProject!, 5);
       if (ragResult) {
         ragContext = ragResult.formattedContext;
       }
@@ -274,6 +309,8 @@ export async function runAgent(
       ? (() => { try { return decompositionModule.formatDecompositionForLLM(decomposition); } catch { return undefined; } })()
       : undefined,
     hasGithubToken: !!config.githubToken,
+    mode,
+    intent: intent.intent,
   });
 
   const llm = new ChatOpenAI({
