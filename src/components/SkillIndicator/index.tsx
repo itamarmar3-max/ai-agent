@@ -33,8 +33,8 @@ export function SkillIndicator() {
               (isStreaming ? 'animate-pulse-subtle' : '')
             }
             style={{
-              background: 'var(--ds-accent-glow)',
-              border: '1px solid rgba(124,108,252,0.3)',
+              background: 'var(--ds-accent-soft)',
+              border: '1px solid var(--ds-accent-glow-strong)',
               color: 'var(--ds-accent)',
             }}
           >

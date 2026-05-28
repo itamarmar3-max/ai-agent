@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Download, Bot, Loader2, Square, StopCircle } from 'lucide-react';
+import { Download, Bot, Loader2, StopCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useChatStore } from '@/lib/store';
 import { useChatStream } from '@/hooks/useChatStream';
@@ -24,6 +24,7 @@ export function ChatWindow() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const currentToolCall = useChatStore((s) => s.currentToolCall);
   const performance = useChatStore((s) => s.performance);
+  const lastIntent = useChatStore((s) => s.lastIntent);
   const { sendMessage, stopStreaming } = useChatStream();
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -117,8 +118,8 @@ export function ChatWindow() {
                 <div
                   className="flex items-center justify-center w-7 h-7 rounded-lg"
                   style={{
-                    background: 'var(--ds-accent-glow)',
-                    border: '1px solid rgba(37,99,235,0.2)',
+                    background: 'var(--ds-gradient-soft)',
+                    border: '1px solid var(--ds-accent-glow-strong)',
                   }}
                 >
                   <Bot className="w-3.5 h-3.5" style={{ color: 'var(--ds-accent)' }} />
@@ -127,8 +128,12 @@ export function ChatWindow() {
                   <Loader2 className="w-3.5 h-3.5 animate-pulse-subtle" style={{ color: 'var(--ds-accent)' }} />
                   <span>
                     {currentToolCall
-                      ? `Executing ${currentToolCall.name}...`
-                      : 'Thinking...'}
+                      ? <>Running <span className="font-mono">{currentToolCall.name}</span>…</>
+                      : lastIntent?.intent === 'smalltalk'
+                        ? 'Replying…'
+                        : lastIntent?.intent === 'task'
+                          ? 'Planning…'
+                          : 'Thinking…'}
                   </span>
                 </div>
               </div>

@@ -1,4 +1,4 @@
-import { runAgent, type AgentConfig } from '@/agent';
+import { runAgent, type AgentConfig, type AgentMode } from '@/agent';
 import { healthMonitor } from '@/agent/reliability';
 import type { ChatMessage, AppSettings } from '@/types';
 
@@ -28,7 +28,7 @@ import type { ChatMessage, AppSettings } from '@/types';
  */
 
 export async function POST(request: Request) {
-  let body: { messages?: ChatMessage[]; settings?: AppSettings; skill?: string; project?: string };
+  let body: { messages?: ChatMessage[]; settings?: AppSettings; skill?: string; project?: string; mode?: AgentMode };
 
   try {
     const raw = await request.json();
@@ -80,7 +80,10 @@ export async function POST(request: Request) {
           imageApi?.apiKey
             ? { apiKey: imageApi.apiKey, baseUrl: imageApi.baseUrl, model: imageApi.model }
             : undefined,
-        maxIterations: 15,
+        mode: body.mode,
+        onIntent(intent) {
+          sendEvent({ type: 'intent', data: intent });
+        },
         onToken(token: string) {
           sendEvent({ type: 'token', data: token });
         },

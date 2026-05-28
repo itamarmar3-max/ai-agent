@@ -2,7 +2,7 @@
 
 import { useState, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Copy, Check, Bot, ChevronDown, ChevronRight, Wrench, AlertCircle, CheckCircle2, Loader2, Clock } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronRight, Wrench, AlertCircle, CheckCircle2, Loader2, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -15,27 +15,43 @@ interface ChatMessageProps {
   message: ChatMessageType;
 }
 
+function summarizeToolInput(input: Record<string, unknown>): string | null {
+  if (!input) return null;
+  const candidates = ['path', 'file', 'filePath', 'query', 'url', 'topic', 'message', 'name'];
+  for (const key of candidates) {
+    if (typeof input[key] === 'string' && (input[key] as string).length > 0) {
+      const v = input[key] as string;
+      return v.length > 60 ? v.slice(0, 60) + '…' : v;
+    }
+  }
+  const firstStr = Object.values(input).find((v) => typeof v === 'string' && (v as string).length > 0) as string | undefined;
+  return firstStr ? (firstStr.length > 60 ? firstStr.slice(0, 60) + '…' : firstStr) : null;
+}
+
 function ToolCallPanel({ toolCall }: { toolCall: ToolCall }) {
   const [expanded, setExpanded] = useState(false);
 
   const statusConfig = {
     running: {
-      borderColor: 'var(--ds-accent)',
+      accent: 'var(--ds-accent)',
       icon: <Loader2 className="w-3 h-3 animate-pulse-subtle" style={{ color: 'var(--ds-accent)' }} />,
-      badgeClass: 'bg-[var(--ds-accent-glow)] text-[var(--ds-accent)] border-[rgba(37,99,235,0.3)]',
-      statusText: 'running',
+      label: 'running',
+      labelBg: 'var(--ds-accent-glow)',
+      labelColor: 'var(--ds-accent)',
     },
     completed: {
-      borderColor: 'var(--ds-success)',
+      accent: 'var(--ds-success)',
       icon: <CheckCircle2 className="w-3 h-3" style={{ color: 'var(--ds-success)' }} />,
-      badgeClass: 'bg-[rgba(5,150,105,0.08)] text-[var(--ds-success)] border-[rgba(5,150,105,0.3)]',
-      statusText: 'done',
+      label: 'done',
+      labelBg: 'var(--ds-success-soft)',
+      labelColor: 'var(--ds-success)',
     },
     error: {
-      borderColor: 'var(--ds-error)',
+      accent: 'var(--ds-error)',
       icon: <AlertCircle className="w-3 h-3" style={{ color: 'var(--ds-error)' }} />,
-      badgeClass: 'bg-[rgba(220,38,38,0.08)] text-[var(--ds-error)] border-[rgba(220,38,38,0.3)]',
-      statusText: 'failed',
+      label: 'failed',
+      labelBg: 'var(--ds-error-soft)',
+      labelColor: 'var(--ds-error)',
     },
   };
 
@@ -44,70 +60,75 @@ function ToolCallPanel({ toolCall }: { toolCall: ToolCall }) {
     ? `${(toolCall.duration / 1000).toFixed(1)}s`
     : null;
 
-  // Generate result summary
-  const resultSummary = toolCall.output
-    ? (toolCall.output.length > 80
-        ? toolCall.output.substring(0, 80) + '...'
-        : toolCall.output)
-    : null;
+  const inputSummary = summarizeToolInput(toolCall.input);
 
   return (
     <div
-      className="my-1.5 rounded-lg overflow-hidden animate-slide-in-left"
+      className="my-1 rounded-lg overflow-hidden transition-smooth animate-slide-in-left"
       style={{
-        background: 'var(--ds-tool-bg)',
-        border: `1px solid var(--ds-tool-border)`,
-        borderLeft: `3px solid ${config.borderColor}`,
+        background: toolCall.status === 'running' ? 'var(--ds-tool-bg-active)' : 'var(--ds-tool-bg)',
+        border: `1px solid ${toolCall.status === 'running' ? config.accent : 'var(--ds-tool-border)'}`,
+        boxShadow: toolCall.status === 'running' ? '0 0 0 3px var(--ds-accent-glow)' : 'none',
       }}
     >
-      {/* Header - always visible */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between w-full px-3 py-2 text-left transition-smooth hover:bg-[var(--ds-bg-hover)]"
+        className="flex items-center justify-between w-full px-2.5 py-1.5 text-left transition-smooth hover:bg-[var(--ds-bg-hover)]"
       >
-        <div className="flex items-center gap-2 min-w-0">
-          {expanded ? (
-            <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-text-muted)' }} />
-          ) : (
-            <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-text-muted)' }} />
-          )}
-          <Wrench className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-text-secondary)' }} />
-          <span className="text-xs font-mono font-medium truncate" style={{ color: 'var(--ds-text-primary)' }}>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          {expanded
+            ? <ChevronDown className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-text-muted)' }} />
+            : <ChevronRight className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-text-muted)' }} />}
+          <div
+            className="flex items-center justify-center w-5 h-5 rounded-md shrink-0"
+            style={{ background: config.labelBg }}
+          >
+            {toolCall.status === 'completed'
+              ? config.icon
+              : toolCall.status === 'error'
+                ? config.icon
+                : <Wrench className="w-3 h-3" style={{ color: config.labelColor }} />}
+          </div>
+          <span
+            className="text-xs font-mono font-medium truncate"
+            style={{ color: 'var(--ds-text-primary)' }}
+          >
             {toolCall.name}
           </span>
+          {inputSummary && !expanded && (
+            <span
+              className="text-[11px] truncate hidden sm:inline"
+              style={{ color: 'var(--ds-text-muted)' }}
+            >
+              · {inputSummary}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-2">
           {durationStr && (
-            <span className="text-[10px] font-mono flex items-center gap-1" style={{ color: 'var(--ds-text-muted)' }}>
+            <span
+              className="text-[10px] font-mono tabular-nums flex items-center gap-1"
+              style={{ color: 'var(--ds-text-muted)' }}
+            >
               <Clock className="w-2.5 h-2.5" />
               {durationStr}
             </span>
           )}
-          <Badge
-            variant="outline"
-            className={cn('text-[10px] px-1.5 py-0', config.badgeClass)}
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-1 font-medium"
+            style={{ background: config.labelBg, color: config.labelColor }}
           >
             {config.icon}
-            <span className="ml-1">{config.statusText}</span>
-          </Badge>
+            <span>{config.label}</span>
+          </span>
         </div>
       </button>
 
-      {/* Result summary - collapsed view */}
-      {!expanded && resultSummary && toolCall.status === 'completed' && (
-        <div className="px-3 pb-2 pl-8">
-          <p className="text-[11px] truncate" style={{ color: 'var(--ds-text-secondary)' }}>
-            {resultSummary}
-          </p>
-        </div>
-      )}
-
-      {/* Expanded content */}
       {expanded && (
         <div style={{ borderTop: '1px solid var(--ds-tool-border)' }}>
-          <div className="px-3 py-1.5">
+          <div className="px-3 pt-2 pb-1 flex items-center justify-between">
             <span
-              className="text-[10px] uppercase tracking-wider font-medium"
+              className="text-[10px] uppercase tracking-wider font-semibold"
               style={{ color: 'var(--ds-text-muted)' }}
             >
               Input
@@ -121,9 +142,9 @@ function ToolCallPanel({ toolCall }: { toolCall: ToolCall }) {
           </pre>
           {toolCall.output && (
             <>
-              <div className="px-3 py-1.5" style={{ borderTop: '1px solid var(--ds-tool-border)' }}>
+              <div className="px-3 pt-2 pb-1" style={{ borderTop: '1px solid var(--ds-tool-border)' }}>
                 <span
-                  className="text-[10px] uppercase tracking-wider font-medium"
+                  className="text-[10px] uppercase tracking-wider font-semibold"
                   style={{ color: 'var(--ds-text-muted)' }}
                 >
                   Output
@@ -196,37 +217,39 @@ function ChatMessageComponent({ message }: ChatMessageProps) {
         {/* Plan panel (before message bubble) */}
         {message.plan && (
           <div
-            className="my-1 rounded-lg p-3 w-full"
-            style={{
-              background: 'var(--ds-bg-secondary)',
-              border: '1px solid var(--ds-tool-border)',
-              borderLeft: '3px solid var(--ds-accent)',
-            }}
+            className="my-1 rounded-xl p-3.5 w-full surface-elevated animate-fade-in-up"
+            style={{ borderLeft: '3px solid var(--ds-accent)' }}
           >
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-semibold" style={{ color: 'var(--ds-accent)' }}>Plan</span>
+            <div className="flex items-center gap-2 mb-2.5">
+              <span className="text-xs font-semibold tracking-wide uppercase" style={{ color: 'var(--ds-accent)' }}>
+                Plan
+              </span>
               <Badge
                 variant="outline"
-                className="text-[10px]"
+                className="text-[10px] px-2"
                 style={{
-                  border: '1px solid rgba(37,99,235,0.3)',
+                  border: '1px solid var(--ds-accent-glow-strong)',
                   color: 'var(--ds-accent)',
-                  background: 'var(--ds-accent-glow)',
+                  background: 'var(--ds-accent-soft)',
                 }}
               >
                 {message.plan.estimated_complexity} complexity
               </Badge>
             </div>
-            <p className="text-xs mb-2" style={{ color: 'var(--ds-text-primary)' }}>{message.plan.goal}</p>
-            <ol className="text-[11px] space-y-1 ml-4" style={{ color: 'var(--ds-text-secondary)' }}>
+            <p className="text-sm mb-2.5 leading-snug" style={{ color: 'var(--ds-text-primary)' }}>
+              {message.plan.goal}
+            </p>
+            <ol className="text-[12px] space-y-1 ml-4" style={{ color: 'var(--ds-text-secondary)' }}>
               {message.plan.steps.map((step, i) => (
-                <li key={i} className="list-decimal">{step}</li>
+                <li key={i} className="list-decimal pl-1">{step}</li>
               ))}
             </ol>
             {message.plan.tools_needed.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">
+              <div className="flex flex-wrap gap-1 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--ds-border)' }}>
                 {message.plan.tools_needed.map(tool => (
-                  <Badge key={tool} variant="secondary" className="text-[9px] px-1.5 font-mono">{tool}</Badge>
+                  <Badge key={tool} variant="secondary" className="text-[10px] px-1.5 font-mono">
+                    {tool}
+                  </Badge>
                 ))}
               </div>
             )}
@@ -238,14 +261,14 @@ function ChatMessageComponent({ message }: ChatMessageProps) {
           <div className="flex items-start gap-1">
             {isUser ? (
               <div
-                className="rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed"
+                className="rounded-2xl rounded-tr-md px-4 py-2.5 text-sm leading-relaxed shadow-sm"
                 style={{
-                  background: 'var(--ds-bg-tertiary)',
-                  border: '1px solid var(--ds-border)',
-                  color: 'var(--ds-text-primary)',
+                  background: 'var(--ds-gradient-accent)',
+                  color: 'white',
+                  border: 'none',
                 }}
               >
-                <p className="whitespace-pre-wrap">{message.content}</p>
+                <p className="whitespace-pre-wrap break-words">{message.content}</p>
               </div>
             ) : (
               <div className="flex-1 min-w-0">

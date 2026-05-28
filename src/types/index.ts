@@ -112,11 +112,11 @@ export interface AgentActivity {
 }
 
 export interface StreamEvent {
-  type: 'token' | 'tool_start' | 'tool_end' | 'tool_error' | 'done' | 'error' | 'image' 
+  type: 'token' | 'tool_start' | 'tool_end' | 'tool_error' | 'done' | 'error' | 'image'
       | 'plan' | 'reflection' | 'subtask_update' | 'progress' | 'performance'
       | 'skill_detected' | 'skill_clarify'
       | 'agent_activity' | 'context_compressed' | 'rag_injected' | 'interrupt'
-      | 'retry' | 'health_update';
+      | 'retry' | 'health_update' | 'intent';
   data: unknown;
 }
 

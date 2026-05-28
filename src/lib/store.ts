@@ -87,6 +87,10 @@ interface ChatStore {
   healthMetrics: HealthMetrics | null;
   currentRetry: RetryInfo | null;
 
+  // Response mode (Quick / Smart / Deep) — controls how much planning runs
+  responseMode: 'auto' | 'quick' | 'smart' | 'deep';
+  lastIntent: { intent: string; reason: string } | null;
+
   // Actions
   setMessages: (msgs: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
@@ -146,6 +150,10 @@ interface ChatStore {
   // Reliability actions
   setHealthMetrics: (metrics: HealthMetrics | null) => void;
   setCurrentRetry: (retry: RetryInfo | null) => void;
+
+  // Response mode actions
+  setResponseMode: (mode: 'auto' | 'quick' | 'smart' | 'deep') => void;
+  setLastIntent: (intent: { intent: string; reason: string } | null) => void;
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -196,6 +204,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   // Reliability state
   healthMetrics: null,
   currentRetry: null,
+
+  // Response mode (Quick / Smart / Deep)
+  responseMode: 'auto' as 'auto' | 'quick' | 'smart' | 'deep',
+  lastIntent: null,
 
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
@@ -350,6 +362,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   // Reliability actions
   setHealthMetrics: (healthMetrics) => set({ healthMetrics }),
   setCurrentRetry: (currentRetry) => set({ currentRetry }),
+
+  // Response mode actions
+  setResponseMode: (responseMode) => set({ responseMode }),
+  setLastIntent: (lastIntent) => set({ lastIntent }),
 }));
 
 // Initialize settings from localStorage on client

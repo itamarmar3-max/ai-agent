@@ -1,33 +1,38 @@
 'use client';
 
-import { useState, useRef, useCallback, type KeyboardEvent } from 'react';
-import { Send, Square, Settings, Paperclip, FolderOpen, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type DragEvent } from 'react';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog';
+  Send, Square, Settings, Paperclip, FolderArchive, X, FileText, Image as ImageIcon,
+  Zap, Sparkles, Brain, ChevronDown,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { useChatStore } from '@/lib/store';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'json', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'java', 'kt',
   'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'csv', 'log', 'env', 'sh', 'bat',
-  'sql', 'graphql', 'prisma',
+  'sql', 'graphql', 'prisma', 'svelte', 'vue', 'rb', 'php', 'c', 'cpp', 'h', 'hpp',
 ]);
 
 const IMAGE_EXTENSIONS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp',
+  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'avif',
 ]);
+
+const MAX_TEXT_BYTES = 200_000;     // 200 KB
+const MAX_IMAGE_BYTES = 4_000_000;  // 4 MB
+const MAX_ATTACHED_FILES = 8;
 
 function getFileExtension(name: string): string {
   const parts = name.split('.');
   return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 interface ChatInputProps {
@@ -35,14 +40,25 @@ interface ChatInputProps {
   onStop: () => void;
 }
 
+type Mode = 'auto' | 'quick' | 'smart' | 'deep';
+const MODE_CONFIG: Record<Mode, { label: string; description: string; icon: typeof Zap; color: string }> = {
+  auto:  { label: 'Auto',  description: 'Decide automatically based on the message', icon: Sparkles, color: 'var(--ds-accent)' },
+  quick: { label: 'Quick', description: 'Fast chat — skips planning',                icon: Zap,      color: 'var(--ds-success)' },
+  smart: { label: 'Smart', description: 'Plans tasks before executing',              icon: Sparkles, color: 'var(--ds-accent)' },
+  deep:  { label: 'Deep',  description: 'Multi-agent planning for complex work',     icon: Brain,    color: '#a855f7' },
+};
+
 export function ChatInput({ onSend, onStop }: ChatInputProps) {
   const [input, setInput] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [zipUploading, setZipUploading] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const zipInputRef = useRef<HTMLInputElement>(null);
-  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
-  const [projectPath, setProjectPath] = useState('');
-  const [connecting, setConnecting] = useState(false);
+  const dragCounter = useRef(0);
+  const modeRef = useRef<HTMLDivElement>(null);
 
   const isStreaming = useChatStore((s) => s.isStreaming);
   const settings = useChatStore((s) => s.settings);
@@ -53,56 +69,106 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
   const removeAttachedFile = useChatStore((s) => s.removeAttachedFile);
   const clearAttachedFiles = useChatStore((s) => s.clearAttachedFiles);
   const setConnectedProject = useChatStore((s) => s.setConnectedProject);
+  const responseMode = useChatStore((s) => s.responseMode);
+  const setResponseMode = useChatStore((s) => s.setResponseMode);
+
+  // Close mode menu on outside click
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modeRef.current && !modeRef.current.contains(e.target as Node)) {
+        setModeMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [modeMenuOpen]);
 
   const adjustHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = 'auto';
-    const maxHeight = 200;
+    const maxHeight = 220;
     textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
   }, []);
 
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+  const processFile = useCallback(async (file: File): Promise<void> => {
+    if (attachedFiles.length >= MAX_ATTACHED_FILES) {
+      toast.error('Too many files', { description: `Max ${MAX_ATTACHED_FILES} attachments at a time.` });
+      return;
+    }
+    if (attachedFiles.some((f) => f.name === file.name)) {
+      toast.message(`Skipped: ${file.name}`, { description: 'Already attached' });
+      return;
+    }
 
-      const ext = getFileExtension(file.name);
-      const isImage = IMAGE_EXTENSIONS.has(ext);
-      const isText = TEXT_EXTENSIONS.has(ext);
+    const ext = getFileExtension(file.name);
+    const isImage = IMAGE_EXTENSIONS.has(ext) || file.type.startsWith('image/');
+    const isText = TEXT_EXTENSIONS.has(ext) || file.type.startsWith('text/') ||
+      file.type === 'application/json' || file.type === 'application/xml';
 
+    if (isImage) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        toast.error(`${file.name} too large`, { description: `Images capped at ${formatBytes(MAX_IMAGE_BYTES)}.` });
+        return;
+      }
       const reader = new FileReader();
-      if (isImage) {
+      await new Promise<void>((resolve) => {
         reader.onload = () => {
-          const content = reader.result as string;
           addAttachedFile({
             name: file.name,
-            content: content.length > 100000 ? content.slice(0, 50000) : content,
+            content: reader.result as string,
             type: 'image',
             size: file.size,
           });
+          resolve();
         };
+        reader.onerror = () => resolve();
         reader.readAsDataURL(file);
-      } else {
-        reader.onload = () => {
-          let content = reader.result as string;
-          if (content.length > 100000) {
-            content = content.slice(0, 50000) + '\n\n... [truncated]';
-          }
-          addAttachedFile({
-            name: file.name,
-            content,
-            type: 'text',
-            size: file.size,
-          });
-        };
-        reader.readAsText(file);
-      }
+      });
+      return;
+    }
 
-      // Reset input so same file can be selected again
+    if (!isText) {
+      toast.error(`Cannot attach ${file.name}`, {
+        description: 'Only text and image files are supported. ZIPs use the project button.',
+      });
+      return;
+    }
+
+    const reader = new FileReader();
+    await new Promise<void>((resolve) => {
+      reader.onload = () => {
+        let content = reader.result as string;
+        const truncated = content.length > MAX_TEXT_BYTES;
+        if (truncated) {
+          content = content.slice(0, MAX_TEXT_BYTES) + '\n\n... [truncated]';
+        }
+        addAttachedFile({
+          name: file.name,
+          content,
+          type: 'text',
+          size: file.size,
+        });
+        if (truncated) {
+          toast.message(`${file.name} truncated`, { description: `Kept first ${formatBytes(MAX_TEXT_BYTES)}.` });
+        }
+        resolve();
+      };
+      reader.onerror = () => resolve();
+      reader.readAsText(file);
+    });
+  }, [attachedFiles, addAttachedFile]);
+
+  const handleFileSelect = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      for (const file of files) {
+        await processFile(file);
+      }
       e.target.value = '';
     },
-    [addAttachedFile]
+    [processFile],
   );
 
   const handleZipUpload = useCallback(
@@ -110,11 +176,11 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
       const file = e.target.files?.[0];
       if (!file) return;
 
-      setConnecting(true);
+      setZipUploading(true);
       try {
         const formData = new FormData();
         formData.append('action', 'upload_zip');
-        formData.append('project', file.name.replace('.zip', ''));
+        formData.append('project', file.name.replace(/\.zip$/i, ''));
         formData.append('zip', file);
 
         const res = await fetch('/api/project', {
@@ -128,52 +194,20 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
         }
 
         const data = await res.json();
-        setConnectedProject(data.projectName || file.name.replace('.zip', ''));
-        setConnectDialogOpen(false);
-        toast.success('Project connected', { description: data.projectName || file.name });
+        const projectName = data.projectName || file.name.replace(/\.zip$/i, '');
+        setConnectedProject(projectName);
+        toast.success('Project connected', { description: projectName });
       } catch (err) {
         toast.error('Failed to upload ZIP', {
           description: err instanceof Error ? err.message : 'Unknown error',
         });
       } finally {
-        setConnecting(false);
+        setZipUploading(false);
         e.target.value = '';
       }
     },
-    [setConnectedProject]
+    [setConnectedProject],
   );
-
-  const handleConnectPath = useCallback(async () => {
-    if (!projectPath.trim()) {
-      toast.error('Please enter a project path');
-      return;
-    }
-
-    setConnecting(true);
-    try {
-      const res = await fetch('/api/project', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'path', path: projectPath.trim() }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Connection failed' }));
-        throw new Error(err.error || 'Connection failed');
-      }
-
-      const data = await res.json();
-      setConnectedProject(data.projectName || projectPath.trim());
-      setConnectDialogOpen(false);
-      toast.success('Project connected', { description: projectPath.trim() });
-    } catch (err) {
-      toast.error('Failed to connect project', {
-        description: err instanceof Error ? err.message : 'Unknown error',
-      });
-    } finally {
-      setConnecting(false);
-    }
-  }, [projectPath, setConnectedProject]);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -182,8 +216,14 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
 
     let messageContent = trimmed;
     if (attachedFiles.length > 0) {
-      const fileParts = attachedFiles.map(f => `[File: ${f.name}]\n${f.content}\n\n`).join('');
-      messageContent = fileParts + trimmed;
+      const fileParts = attachedFiles
+        .map((f) =>
+          f.type === 'image'
+            ? `[Image attached: ${f.name}]\n`
+            : `[File: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\`\n\n`,
+        )
+        .join('');
+      messageContent = fileParts + (trimmed ? `\n${trimmed}` : '');
       clearAttachedFiles();
     }
 
@@ -203,7 +243,7 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend],
   );
 
   const handleChange = useCallback(
@@ -211,17 +251,72 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
       setInput(e.target.value);
       adjustHeight();
     },
-    [adjustHeight]
+    [adjustHeight],
+  );
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            await processFile(file);
+          }
+        }
+      }
+    },
+    [processFile],
+  );
+
+  const handleDragEnter = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    dragCounter.current += 1;
+    if (e.dataTransfer?.types?.includes('Files')) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const handleDrop = useCallback(
+    async (e: DragEvent) => {
+      e.preventDefault();
+      dragCounter.current = 0;
+      setIsDragging(false);
+      const files = Array.from(e.dataTransfer?.files || []);
+      for (const file of files) {
+        if (/\.zip$/i.test(file.name)) {
+          toast.message(`${file.name}: use the project button`, {
+            description: 'ZIPs upload as connected projects, not attachments.',
+          });
+          continue;
+        }
+        await processFile(file);
+      }
+    },
+    [processFile],
   );
 
   if (!hasApiKey) {
     return (
       <div
         className="px-4 py-6"
-        style={{
-          borderTop: '1px solid var(--ds-border)',
-          background: 'var(--ds-bg-secondary)',
-        }}
+        style={{ borderTop: '1px solid var(--ds-border)', background: 'var(--ds-bg-secondary)' }}
       >
         <div className="max-w-2xl mx-auto text-center space-y-3">
           <p className="text-sm" style={{ color: 'var(--ds-text-secondary)' }}>
@@ -229,12 +324,8 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
           </p>
           <Button
             onClick={toggleSettings}
-            variant="outline"
-            className="gap-2 rounded-lg text-white"
-            style={{
-              background: 'var(--ds-accent)',
-              borderColor: 'var(--ds-accent)',
-            }}
+            className="gap-2 rounded-lg text-white shadow-md"
+            style={{ background: 'var(--ds-gradient-accent)', border: 'none' }}
           >
             <Settings className="w-4 h-4" />
             Configure API Key
@@ -244,116 +335,190 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
     );
   }
 
-  return (
-    <>
-      <div
-        className="px-4 py-3"
-        style={{
-          borderTop: '1px solid var(--ds-border)',
-          background: 'var(--ds-bg-secondary)',
-        }}
-      >
-        <div className="max-w-4xl mx-auto">
-          <div className="relative">
-            {/* Hidden file inputs */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-            <input
-              ref={zipInputRef}
-              type="file"
-              accept=".zip"
-              className="hidden"
-              onChange={handleZipUpload}
-            />
+  const currentMode = MODE_CONFIG[responseMode];
+  const ModeIcon = currentMode.icon;
 
-            {/* Attached file chips */}
-            {attachedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {attachedFiles.map((file) => (
+  return (
+    <div
+      className="px-4 py-3"
+      style={{
+        borderTop: '1px solid var(--ds-border)',
+        background: 'var(--ds-bg-secondary)',
+      }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <div className="max-w-4xl mx-auto">
+        <div className="relative">
+          {isDragging && (
+            <div className="drop-overlay">
+              <div className="text-center">
+                <Paperclip className="w-7 h-7 mx-auto mb-2" style={{ color: 'var(--ds-accent)' }} />
+                <p className="text-sm font-medium" style={{ color: 'var(--ds-accent)' }}>
+                  Drop files to attach
+                </p>
+              </div>
+            </div>
+          )}
+
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+          <input ref={zipInputRef} type="file" accept=".zip" className="hidden" onChange={handleZipUpload} />
+
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {attachedFiles.map((file) => {
+                const Icon = file.type === 'image' ? ImageIcon : FileText;
+                return (
                   <div
                     key={file.name}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs animate-scale-in"
                     style={{
                       background: 'var(--ds-bg-tertiary)',
                       border: '1px solid var(--ds-border)',
                       color: 'var(--ds-text-primary)',
                     }}
                   >
-                    <span className="truncate max-w-[120px]">{file.name}</span>
-                    <span className="text-[10px]" style={{ color: 'var(--ds-text-muted)' }}>
-                      {(file.size / 1024).toFixed(0)}KB
+                    <Icon className="w-3 h-3 shrink-0" style={{ color: 'var(--ds-accent)' }} />
+                    <span className="truncate max-w-[140px]">{file.name}</span>
+                    <span className="text-[10px] tabular-nums" style={{ color: 'var(--ds-text-muted)' }}>
+                      {formatBytes(file.size)}
                     </span>
                     <button
                       onClick={() => removeAttachedFile(file.name)}
-                      className="hover:text-[var(--ds-error)]"
+                      className="opacity-60 hover:opacity-100 hover:text-[var(--ds-error)] transition-smooth"
+                      aria-label={`Remove ${file.name}`}
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
+          )}
 
+          <div
+            className="relative rounded-2xl transition-smooth surface-elevated"
+            style={{
+              boxShadow: 'var(--ds-shadow-sm)',
+            }}
+          >
             <textarea
               ref={textareaRef}
               value={input}
               onChange={handleChange}
               onKeyDown={handleKeyDown}
-              placeholder="Ask anything or describe a task..."
+              onPaste={handlePaste}
+              placeholder="Message the agent — drop or paste files, hit Enter to send..."
               disabled={isStreaming}
               rows={1}
-              className="w-full min-h-[48px] max-h-[200px] resize-none rounded-2xl py-3.5 pl-4 pr-14 text-sm leading-relaxed focus:outline-none placeholder:opacity-40"
+              className="w-full min-h-[52px] max-h-[220px] resize-none rounded-2xl py-3.5 pl-4 pr-14 text-sm leading-relaxed bg-transparent focus:outline-none placeholder:opacity-40"
               style={{
-                background: 'var(--ds-bg-tertiary)',
-                border: '1px solid var(--ds-border)',
                 color: 'var(--ds-text-primary)',
                 fontFamily: "'Inter', system-ui, sans-serif",
               }}
               onFocus={(e) => {
-                e.currentTarget.style.borderColor = 'var(--ds-accent)';
-                e.currentTarget.style.boxShadow = '0 0 0 3px var(--ds-accent-glow)';
+                (e.currentTarget.parentElement as HTMLElement).style.borderColor = 'var(--ds-border-focus)';
+                (e.currentTarget.parentElement as HTMLElement).style.boxShadow = 'var(--ds-shadow-glow)';
               }}
               onBlur={(e) => {
-                e.currentTarget.style.borderColor = 'var(--ds-border)';
-                e.currentTarget.style.boxShadow = 'none';
+                (e.currentTarget.parentElement as HTMLElement).style.borderColor = 'var(--ds-border)';
+                (e.currentTarget.parentElement as HTMLElement).style.boxShadow = 'var(--ds-shadow-sm)';
               }}
             />
-            {/* Bottom row - overlaid on the textarea */}
-            <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between pointer-events-none">
-              <div className="flex items-center gap-1 pointer-events-auto">
+
+            <div className="flex items-center justify-between px-2.5 pb-2 pt-0">
+              <div className="flex items-center gap-0.5">
                 <button
                   className="p-1.5 rounded-md transition-smooth hover:bg-[var(--ds-bg-hover)]"
                   style={{ color: 'var(--ds-text-muted)' }}
-                  title="Attach file"
+                  title="Attach files (or drop / paste)"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Paperclip className="w-4 h-4" />
                 </button>
                 <button
-                  className="p-1.5 rounded-md transition-smooth hover:bg-[var(--ds-bg-hover)]"
+                  className="p-1.5 rounded-md transition-smooth hover:bg-[var(--ds-bg-hover)] disabled:opacity-50"
                   style={{ color: 'var(--ds-text-muted)' }}
-                  title="Connect project"
-                  onClick={() => setConnectDialogOpen(true)}
+                  title="Upload project (ZIP)"
+                  onClick={() => zipInputRef.current?.click()}
+                  disabled={zipUploading}
                 >
-                  <FolderOpen className="w-4 h-4" />
+                  <FolderArchive className="w-4 h-4" />
                 </button>
+
+                {/* Mode selector */}
+                <div ref={modeRef} className="relative">
+                  <button
+                    onClick={() => setModeMenuOpen((s) => !s)}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md transition-smooth hover:bg-[var(--ds-bg-hover)]"
+                    style={{ color: 'var(--ds-text-secondary)' }}
+                    title="Response mode"
+                  >
+                    <ModeIcon className="w-3.5 h-3.5" style={{ color: currentMode.color }} />
+                    <span className="text-xs font-medium">{currentMode.label}</span>
+                    <ChevronDown className="w-3 h-3 opacity-60" />
+                  </button>
+                  {modeMenuOpen && (
+                    <div
+                      className="absolute bottom-full left-0 mb-2 rounded-xl py-1 min-w-[240px] animate-scale-in surface-elevated-md z-40"
+                    >
+                      {(['auto', 'quick', 'smart', 'deep'] as const).map((m) => {
+                        const cfg = MODE_CONFIG[m];
+                        const Icon = cfg.icon;
+                        const selected = responseMode === m;
+                        return (
+                          <button
+                            key={m}
+                            onClick={() => {
+                              setResponseMode(m);
+                              setModeMenuOpen(false);
+                            }}
+                            className={cn(
+                              'flex items-start gap-2.5 w-full text-left px-3 py-2 transition-smooth',
+                              'hover:bg-[var(--ds-bg-hover)]',
+                            )}
+                          >
+                            <Icon className="w-4 h-4 mt-0.5 shrink-0" style={{ color: cfg.color }} />
+                            <div className="flex-1 min-w-0">
+                              <div
+                                className="text-xs font-medium flex items-center gap-1.5"
+                                style={{ color: 'var(--ds-text-primary)' }}
+                              >
+                                {cfg.label}
+                                {selected && (
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full"
+                                    style={{ background: cfg.color }}
+                                  />
+                                )}
+                              </div>
+                              <div className="text-[11px] mt-0.5" style={{ color: 'var(--ds-text-muted)' }}>
+                                {cfg.description}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 pointer-events-auto">
-                <span className="text-[10px] font-mono" style={{ color: 'var(--ds-text-muted)' }}>
-                  {input.length > 0 ? `${input.length} chars` : ''}
+
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-[10px] font-mono tabular-nums"
+                  style={{ color: 'var(--ds-text-muted)' }}
+                >
+                  {input.length > 0 ? `${input.length}` : ''}
                 </span>
                 {isStreaming ? (
                   <button
                     onClick={onStop}
-                    className="flex items-center justify-center w-8 h-8 rounded-xl transition-smooth"
-                    style={{
-                      background: 'var(--ds-error)',
-                      color: 'white',
-                    }}
+                    className="flex items-center justify-center w-8 h-8 rounded-xl transition-smooth shadow-sm hover:scale-105"
+                    style={{ background: 'var(--ds-error)', color: 'white' }}
+                    title="Stop"
                   >
                     <Square className="w-3.5 h-3.5" />
                   </button>
@@ -361,14 +526,20 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
                   <button
                     onClick={handleSend}
                     disabled={!input.trim() && attachedFiles.length === 0}
-                    className="flex items-center justify-center w-8 h-8 rounded-xl transition-smooth"
+                    className="flex items-center justify-center w-8 h-8 rounded-xl transition-smooth disabled:cursor-not-allowed hover:scale-105 disabled:hover:scale-100"
                     style={{
-                      background: (input.trim() || attachedFiles.length > 0) ? 'var(--ds-accent)' : 'var(--ds-bg-tertiary)',
-                      color: (input.trim() || attachedFiles.length > 0) ? 'white' : 'var(--ds-text-muted)',
-                      border: (input.trim() || attachedFiles.length > 0) ? 'none' : '1px solid var(--ds-border)',
+                      background:
+                        (input.trim() || attachedFiles.length > 0)
+                          ? 'var(--ds-gradient-accent)'
+                          : 'var(--ds-bg-tertiary)',
+                      color: 'white',
+                      border: 'none',
                       opacity: (input.trim() || attachedFiles.length > 0) ? 1 : 0.5,
-                      cursor: (input.trim() || attachedFiles.length > 0) ? 'pointer' : 'default',
+                      boxShadow: (input.trim() || attachedFiles.length > 0)
+                        ? '0 4px 12px -2px var(--ds-accent-glow-strong)'
+                        : 'none',
                     }}
+                    title="Send (Enter)"
                   >
                     <Send className="w-4 h-4" />
                   </button>
@@ -376,103 +547,22 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
               </div>
             </div>
           </div>
-          <p className="text-[11px] mt-2 text-center" style={{ color: 'var(--ds-text-muted)' }}>
-            Enter to send · Shift+Enter for newline · <kbd className="px-1 py-0.5 rounded text-[10px]" style={{ background: 'var(--ds-bg-tertiary)', border: '1px solid var(--ds-border)' }}>Ctrl+/</kbd> to focus
-          </p>
         </div>
+
+        <p
+          className="text-[11px] mt-2 text-center select-none"
+          style={{ color: 'var(--ds-text-muted)' }}
+        >
+          Enter to send · Shift+Enter for newline ·
+          <kbd
+            className="ml-1 px-1 py-0.5 rounded text-[10px]"
+            style={{ background: 'var(--ds-bg-tertiary)', border: '1px solid var(--ds-border)' }}
+          >
+            Ctrl+/
+          </kbd>{' '}
+          to focus
+        </p>
       </div>
-
-      {/* Connect Project Dialog */}
-      <Dialog open={connectDialogOpen} onOpenChange={setConnectDialogOpen}>
-        <DialogContent className="sm:max-w-md" style={{ background: 'var(--ds-bg-secondary)' }}>
-          <DialogHeader>
-            <DialogTitle style={{ color: 'var(--ds-text-primary)' }}>Connect Project</DialogTitle>
-            <DialogDescription style={{ color: 'var(--ds-text-secondary)' }}>
-              Upload a ZIP file or provide a local path to connect your project.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 mt-4">
-            {/* Option 1: Upload ZIP */}
-            <div
-              className="p-4 rounded-xl cursor-pointer transition-smooth"
-              style={{
-                background: 'var(--ds-bg-tertiary)',
-                border: '1px solid var(--ds-border)',
-              }}
-              onClick={() => zipInputRef.current?.click()}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = 'var(--ds-accent)';
-                e.currentTarget.style.background = 'var(--ds-bg-hover)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = 'var(--ds-border)';
-                e.currentTarget.style.background = 'var(--ds-bg-tertiary)';
-              }}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="flex items-center justify-center w-10 h-10 rounded-lg"
-                  style={{ background: 'var(--ds-accent-glow)' }}
-                >
-                  <FolderOpen className="w-5 h-5" style={{ color: 'var(--ds-accent)' }} />
-                </div>
-                <div>
-                  <p className="text-sm font-medium" style={{ color: 'var(--ds-text-primary)' }}>
-                    Upload ZIP Archive
-                  </p>
-                  <p className="text-xs" style={{ color: 'var(--ds-text-muted)' }}>
-                    Select a .zip file from your computer
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Divider */}
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-px" style={{ background: 'var(--ds-border)' }} />
-              <span className="text-xs" style={{ color: 'var(--ds-text-muted)' }}>or</span>
-              <div className="flex-1 h-px" style={{ background: 'var(--ds-border)' }} />
-            </div>
-
-            {/* Option 2: Enter path */}
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs" style={{ color: 'var(--ds-text-secondary)' }}>
-                  Local Project Path
-                </Label>
-                <Input
-                  value={projectPath}
-                  onChange={(e) => setProjectPath(e.target.value)}
-                  placeholder="/home/user/my-project"
-                  className="text-xs rounded-lg"
-                  style={{
-                    background: 'var(--ds-bg-tertiary)',
-                    border: '1px solid var(--ds-border)',
-                    color: 'var(--ds-text-primary)',
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleConnectPath();
-                    }
-                  }}
-                />
-                <p className="text-[11px]" style={{ color: 'var(--ds-text-muted)' }}>
-                  Enter the absolute path to the project directory
-                </p>
-              </div>
-              <Button
-                onClick={handleConnectPath}
-                disabled={connecting || !projectPath.trim()}
-                className="w-full text-xs text-white rounded-lg"
-                style={{ background: 'var(--ds-accent)' }}
-              >
-                {connecting ? 'Connecting...' : 'Connect'}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
+    </div>
   );
 }
