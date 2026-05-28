@@ -62,42 +62,28 @@ export async function executeToolsInParallel(
   executions: ToolExecution[],
   toolMap: Map<string, any>,
 ): Promise<ToolExecutionResult[]> {
-  const results: ToolExecutionResult[] = [];
-  const queue = [...executions];
+  // Results are written back by *input index* so the caller can safely match
+  // results[i] to executions[i] (and their tool_call_id). A previous version
+  // pushed in completion order, which silently attached a tool's output to a
+  // sibling tool's tool_call_id when calls finished out of order.
+  const results: ToolExecutionResult[] = new Array(executions.length);
+  let nextIndex = 0;
 
-  // Track promises with their settled state
-  const inFlight: Map<Promise<ToolExecutionResult>, boolean> = new Map();
-
-  while (queue.length > 0 || inFlight.size > 0) {
-    // Fill up to concurrency limit
-    while (inFlight.size < MAX_CONCURRENCY && queue.length > 0) {
-      const execution = queue.shift()!;
-      const promise = executeSingleTool(execution, toolMap).then((result) => {
-        results.push(result);
-        return result;
-      });
-      inFlight.set(promise, false);
-    }
-
-    // Wait for at least one to complete
-    if (inFlight.size > 0) {
-      const promises = Array.from(inFlight.keys());
-      await Promise.race(promises);
-
-      // Remove completed promises
-      for (const [promise] of inFlight) {
-        // Wrap with a never-resolving race to check if settled
-        const settled = Promise.race([
-          promise.then(() => true, () => true),
-          new Promise<boolean>((r) => setTimeout(() => r(false), 0)),
-        ]);
-        const isDone = await settled;
-        if (isDone) {
-          inFlight.delete(promise);
-        }
-      }
+  async function worker(): Promise<void> {
+    for (;;) {
+      const current = nextIndex++;
+      if (current >= executions.length) return;
+      // executeSingleTool never rejects — it captures errors into the result.
+      results[current] = await executeSingleTool(executions[current], toolMap);
     }
   }
+
+  const workerCount = Math.min(MAX_CONCURRENCY, executions.length);
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < workerCount; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 
   return results;
 }

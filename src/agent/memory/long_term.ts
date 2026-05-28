@@ -18,6 +18,10 @@ export interface LongTermMemory {
   lastUpdated: number;
 }
 
+// Hard cap so long-term memory (which is injected into every Smart/Deep
+// prompt) cannot grow without bound across many sessions.
+const MAX_FACTS = 200;
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -88,6 +92,12 @@ export async function addFact(key: string, value: string): Promise<void> {
     memory.facts[existingIndex] = { key, value, timestamp: Date.now() };
   } else {
     memory.facts.push({ key, value, timestamp: Date.now() });
+  }
+
+  // Evict oldest facts once over the cap (keeps the most recent MAX_FACTS).
+  if (memory.facts.length > MAX_FACTS) {
+    memory.facts.sort((a, b) => a.timestamp - b.timestamp);
+    memory.facts = memory.facts.slice(memory.facts.length - MAX_FACTS);
   }
 
   await saveLongTermMemory(memory);

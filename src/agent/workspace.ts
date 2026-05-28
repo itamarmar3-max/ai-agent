@@ -36,7 +36,15 @@ export function resolveWorkspacePath(relativePath: string): string {
 }
 
 export function isInsideWorkspace(resolvedPath: string): boolean {
-  return resolvedPath.startsWith(workspaceRoot);
+  // Use path.relative instead of a raw prefix check: a naive startsWith()
+  // wrongly accepts sibling directories that merely share the prefix
+  // (e.g. "<root>-evil"). A path is inside the workspace iff the relative
+  // path neither escapes upward ("..") nor is absolute.
+  const root = path.resolve(workspaceRoot);
+  const target = path.resolve(resolvedPath);
+  if (target === root) return true;
+  const rel = path.relative(root, target);
+  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**
