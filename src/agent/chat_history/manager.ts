@@ -57,10 +57,16 @@ function generateTitle(firstMessage: string): string {
     : cleaned;
 }
 
+const SAFE_CHAT_ID = /^[0-9a-f]{32}$/;
+
 /**
  * Get the file path for a chat session.
+ * Validates chatId to prevent path traversal attacks.
  */
 function getChatPath(chatId: string): string {
+  if (!SAFE_CHAT_ID.test(chatId)) {
+    throw new Error(`Invalid chat ID: "${chatId}"`);
+  }
   return path.join(CHATS_DIR, `${chatId}.json`);
 }
 
