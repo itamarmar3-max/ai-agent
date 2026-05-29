@@ -156,7 +156,7 @@ export function ChatWindow() {
           <span>{performance.totalToolCalls} tool calls</span>
           <span>{formatDuration(performance.sessionDuration)}</span>
           {performance.averageResponseTime > 0 && (
-            <span>{performance.averageResponseTime.toFixed(1)}s avg</span>
+            <span>{(performance.averageResponseTime / 1000).toFixed(1)}s avg</span>
           )}
         </div>
       )}

@@ -217,13 +217,13 @@ export async function runAgent(
   let memoryContext = '';
   let memoryModule: {
     initializeMemory: () => Promise<string>;
-    saveSessionMemory: () => Promise<void>;
-    addToolOutput: (tool: string, input: Record<string, unknown>, output: string) => void;
-    addDecision: (decision: string) => void;
-    addFileCreated: (filePath: string) => void;
-    getFullMemoryContext: () => Promise<string>;
+    saveSessionMemory: (sessionId?: string) => Promise<void>;
+    addToolOutput: (tool: string, input: Record<string, unknown>, output: string, sessionId?: string) => void;
+    addDecision: (decision: string, sessionId?: string) => void;
+    addFileCreated: (filePath: string, sessionId?: string) => void;
+    getFullMemoryContext: (sessionId?: string) => Promise<string>;
     setMemorySession: (id: string) => void;
-    summarizeMemory: () => void;
+    summarizeMemory: (sessionId?: string) => void;
     cleanupSession: (id: string) => void;
   } | null = null;
 
@@ -232,7 +232,7 @@ export async function runAgent(
       memoryModule = await import('./memory');
       memoryModule.setMemorySession(sessionId);
       memoryContext = await memoryModule.initializeMemory();
-      const fullCtx = await memoryModule.getFullMemoryContext();
+      const fullCtx = await memoryModule.getFullMemoryContext(sessionId);
       if (fullCtx) {
         memoryContext = fullCtx;
       }
@@ -302,9 +302,9 @@ export async function runAgent(
 
   // ---- 4. Security (dynamic) ----------------------------------------------
   let securityModule: {
-    checkToolCallLimit: () => { allowed: boolean; reason?: string };
-    checkRateLimit: () => { allowed: boolean; reason?: string };
-    checkInputSafety: (tool: string, input: Record<string, unknown>) => { allowed: boolean; reason?: string; sanitizedInput?: Record<string, unknown> };
+    checkToolCallLimit: (sessionId?: string) => { allowed: boolean; reason?: string };
+    checkRateLimit: (sessionId?: string) => { allowed: boolean; reason?: string };
+    checkInputSafety: (tool: string, input: Record<string, unknown>, sessionId?: string) => { allowed: boolean; reason?: string; sanitizedInput?: Record<string, unknown> };
     setSecuritySession: (id: string) => void;
     cleanupSession: (id: string) => void;
   } | null = null;
@@ -461,22 +461,24 @@ export async function runAgent(
 
       // ---- Interrupt check ------------------------------------------------
       if (config.interruptSignal?.paused) {
-        // Wait until resumed or redirected
-        await new Promise((resolve) => {
-          const check = setInterval(() => {
+        await new Promise<void>((resolve) => {
+          let timer: ReturnType<typeof setTimeout>;
+          const poll = () => {
             if (!config.interruptSignal?.paused) {
-              clearInterval(check);
-              resolve(undefined);
+              resolve();
+            } else {
+              timer = setTimeout(poll, 500);
             }
-          }, 500);
+          };
+          poll();
+          // Ensure the timer is always cleared when the promise resolves
+          void Promise.resolve().then(() => clearTimeout(timer));
         });
-        // If redirected, add redirect message
         if (config.interruptSignal?.redirect) {
           const redirectMsg = config.interruptSignal.redirect;
           config.interruptSignal.redirect = null;
           userMessages.push({ role: 'user', content: redirectMsg });
           messages.push(new HumanMessage(redirectMsg));
-          // Continue loop with new context
           continue;
         }
       }
@@ -484,7 +486,7 @@ export async function runAgent(
       // ---- Security: tool call limit check --------------------------------
       if (securityModule) {
         try {
-          const secCheck = securityModule.checkToolCallLimit();
+          const secCheck = securityModule.checkToolCallLimit(sessionId);
           if (!secCheck.allowed) {
             const reason = secCheck.reason ?? 'Tool call limit reached';
             config.onError?.(reason);
@@ -495,7 +497,7 @@ export async function runAgent(
 
         // ---- Security: rate limit check ------------------------------------
         try {
-          const rateCheck = securityModule.checkRateLimit();
+          const rateCheck = securityModule.checkRateLimit(sessionId);
           if (!rateCheck.allowed) {
             // Wait briefly then continue (don't hard-fail on rate limit)
             await new Promise((r) => setTimeout(r, 2000));
@@ -570,7 +572,7 @@ export async function runAgent(
           // Security: input safety check
           if (securityModule) {
             try {
-              const inputCheck = securityModule.checkInputSafety(toolName, toolInput);
+              const inputCheck = securityModule.checkInputSafety(toolName, toolInput, sessionId);
               if (!inputCheck.allowed) {
                 const reason = inputCheck.reason ?? 'Input safety check failed';
                 config.onToolError?.(toolName, reason);
@@ -636,7 +638,7 @@ export async function runAgent(
             // Add to memory
             if (memoryModule) {
               try {
-                memoryModule.addToolOutput(toolName, toolInput, outputStr);
+                memoryModule.addToolOutput(toolName, toolInput, outputStr, sessionId);
               } catch { /* non-critical */ }
             }
 
@@ -674,7 +676,7 @@ export async function runAgent(
             // Add to memory even on error
             if (memoryModule) {
               try {
-                memoryModule.addToolOutput(toolName, toolInput, `Error: ${errMsg}`);
+                memoryModule.addToolOutput(toolName, toolInput, `Error: ${errMsg}`, sessionId);
               } catch { /* non-critical */ }
             }
 
@@ -719,7 +721,7 @@ export async function runAgent(
             if (securityModule) {
               for (const tc of group) {
                 try {
-                  const inputCheck = securityModule.checkInputSafety(tc.name, tc.input);
+                  const inputCheck = securityModule.checkInputSafety(tc.name, tc.input, sessionId);
                   if (!inputCheck.allowed) {
                     const reason = inputCheck.reason ?? 'Input safety check failed';
                     config.onToolError?.(tc.name, reason);
@@ -750,7 +752,7 @@ export async function runAgent(
                 // Add to memory
                 if (memoryModule) {
                   try {
-                    memoryModule.addToolOutput(pr.toolName, group[i].input, pr.output);
+                    memoryModule.addToolOutput(pr.toolName, group[i].input, pr.output, sessionId);
                   } catch { /* non-critical */ }
                 }
 
@@ -797,7 +799,7 @@ export async function runAgent(
                   const outputStr = typeof output === 'string' ? output : JSON.stringify(output);
 
                   if (memoryModule) {
-                    try { memoryModule.addToolOutput(tc.name, tc.input, outputStr); } catch { /* */ }
+                    try { memoryModule.addToolOutput(tc.name, tc.input, outputStr, sessionId); } catch { /* */ }
                   }
 
                   toolUsageCounts[tc.name] = (toolUsageCounts[tc.name] ?? 0) + 1;
@@ -828,7 +830,7 @@ export async function runAgent(
       // Keep short-term memory bounded so long autonomous runs don't grow it
       // without limit (and don't bloat the injected context).
       if (memoryModule) {
-        try { memoryModule.summarizeMemory(); } catch { /* non-critical */ }
+        try { memoryModule.summarizeMemory(sessionId); } catch { /* non-critical */ }
       }
 
       // ---- Update progress ------------------------------------------------
@@ -866,7 +868,7 @@ export async function runAgent(
   // ---- 7. Save memory and report performance ------------------------------
   if (memoryModule) {
     try {
-      await memoryModule.saveSessionMemory();
+      await memoryModule.saveSessionMemory(sessionId);
     } catch { /* non-critical */ }
   }
 

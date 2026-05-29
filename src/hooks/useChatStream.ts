@@ -154,6 +154,7 @@ export function useChatStream() {
                   name: string;
                   output: string;
                   duration?: number;
+                  timestamp?: number;
                 };
                 // Toast for file-related tools
                 if (endData.name === 'write_file') {
@@ -162,29 +163,27 @@ export function useChatStream() {
                     toast.success('File written', { description: String(inputMatch.input.path) });
                   }
                 }
-                const lastTool = [...currentToolCalls].reverse().find(
-                  (tc) => tc.name === endData.name && tc.status === 'running'
-                );
-                if (lastTool) {
-                  const idx = currentToolCalls.findIndex(
-                    (tc) => tc.id === lastTool.id
-                  );
-                  if (idx !== -1) {
-                    currentToolCalls[idx] = {
-                      ...currentToolCalls[idx],
-                      status: 'completed',
-                      output: endData.output,
-                      duration: endData.duration,
-                    };
-                    updateToolCallInHistory(lastTool.id, {
-                      status: 'completed',
-                      output: endData.output,
-                      duration: endData.duration,
-                    });
-                    updateMessage(assistantId, {
-                      toolCalls: [...currentToolCalls],
-                    });
-                  }
+                // Match by name + earliest-start to handle parallel same-named tools correctly
+                const candidates = currentToolCalls
+                  .map((tc, idx) => ({ tc, idx }))
+                  .filter(({ tc }) => tc.name === endData.name && tc.status === 'running');
+                const matchEntry = candidates.length > 0 ? candidates[0] : null;
+                if (matchEntry) {
+                  const { tc: lastTool, idx } = matchEntry;
+                  currentToolCalls[idx] = {
+                    ...currentToolCalls[idx],
+                    status: 'completed',
+                    output: endData.output,
+                    duration: endData.duration,
+                  };
+                  updateToolCallInHistory(lastTool.id, {
+                    status: 'completed',
+                    output: endData.output,
+                    duration: endData.duration,
+                  });
+                  updateMessage(assistantId, {
+                    toolCalls: [...currentToolCalls],
+                  });
                 }
                 // Refresh workspace after file-related tools
                 const fileToolNames = [
@@ -211,27 +210,24 @@ export function useChatStream() {
                   description: errData.error?.substring(0, 100) || 'Unknown error',
                   duration: 4000,
                 });
-                const lastToolErr = [...currentToolCalls].reverse().find(
-                  (tc) => tc.name === errData.name && tc.status === 'running'
-                );
-                if (lastToolErr) {
-                  const idx = currentToolCalls.findIndex(
-                    (tc) => tc.id === lastToolErr.id
-                  );
-                  if (idx !== -1) {
-                    currentToolCalls[idx] = {
-                      ...currentToolCalls[idx],
-                      status: 'error',
-                      output: `Error: ${errData.error}`,
-                    };
-                    updateToolCallInHistory(lastToolErr.id, {
-                      status: 'error',
-                      output: `Error: ${errData.error}`,
-                    });
-                    updateMessage(assistantId, {
-                      toolCalls: [...currentToolCalls],
-                    });
-                  }
+                const errCandidates = currentToolCalls
+                  .map((tc, idx) => ({ tc, idx }))
+                  .filter(({ tc }) => tc.name === errData.name && tc.status === 'running');
+                const errEntry = errCandidates.length > 0 ? errCandidates[0] : null;
+                if (errEntry) {
+                  const { tc: lastToolErr, idx } = errEntry;
+                  currentToolCalls[idx] = {
+                    ...currentToolCalls[idx],
+                    status: 'error',
+                    output: `Error: ${errData.error}`,
+                  };
+                  updateToolCallInHistory(lastToolErr.id, {
+                    status: 'error',
+                    output: `Error: ${errData.error}`,
+                  });
+                  updateMessage(assistantId, {
+                    toolCalls: [...currentToolCalls],
+                  });
                 }
                 break;
               }

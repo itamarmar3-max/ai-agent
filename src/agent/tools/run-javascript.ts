@@ -1,7 +1,6 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { createContext, Script } from 'vm';
-import { TextEncoder, TextDecoder } from 'util';
 
 /**
  * run_javascript - Execute JavaScript code in a sandboxed environment.
@@ -12,6 +11,9 @@ export const runJavascriptTool = tool(
     const output: string[] = [];
     const startTime = Date.now();
 
+    // Do NOT inject host Object/Array/String/etc. – the VM context provides
+    // isolated copies automatically, preventing prototype-chain pollution of
+    // the host process. Only safe, value-type helpers are explicitly provided.
     const sandbox = {
       console: {
         log: (...args: unknown[]) => {
@@ -31,10 +33,10 @@ export const runJavascriptTool = tool(
         },
       },
       result: undefined as unknown,
-      TextEncoder,
-      TextDecoder,
-      JSON: { ...JSON },
-      Math: { ...Math },
+      // JSON is safe to expose as a plain copy of its methods
+      JSON: { parse: JSON.parse, stringify: JSON.stringify },
+      // Math is safe as all its values are primitives
+      Math: Object.assign(Object.create(null), Math),
       parseInt,
       parseFloat,
       isNaN,
@@ -43,20 +45,6 @@ export const runJavascriptTool = tool(
       decodeURIComponent,
       encodeURI,
       decodeURI,
-      Date,
-      Array,
-      Object,
-      String,
-      Number,
-      Boolean,
-      Map,
-      Set,
-      Promise,
-      Error,
-      TypeError,
-      RangeError,
-      SyntaxError,
-      RegExp,
     };
 
     try {

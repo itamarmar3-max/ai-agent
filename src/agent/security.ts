@@ -52,20 +52,19 @@ class SecuritySession {
 
 // Map of session IDs to their security state
 const sessions = new Map<string, SecuritySession>();
-let currentSessionId = 'default';
 
 export function setSecuritySession(sessionId: string): void {
-  currentSessionId = sessionId;
   if (!sessions.has(sessionId)) {
     sessions.set(sessionId, new SecuritySession());
   }
 }
 
-function getSession(): SecuritySession {
-  let session = sessions.get(currentSessionId);
+function getSession(sessionId?: string): SecuritySession {
+  const id = sessionId ?? 'default';
+  let session = sessions.get(id);
   if (!session) {
     session = new SecuritySession();
-    sessions.set(currentSessionId, session);
+    sessions.set(id, session);
   }
   return session;
 }
@@ -175,6 +174,7 @@ export function checkPathSafety(filePath: string): SecurityCheckResult {
 export function checkInputSafety(
   toolName: string,
   input: Record<string, unknown>,
+  sessionId?: string,
 ): SecurityCheckResult {
   const inputStr = JSON.stringify(input).toLowerCase();
   const foundPatterns: string[] = [];
@@ -186,7 +186,7 @@ export function checkInputSafety(
   }
 
   if (foundPatterns.length > 0) {
-    const session = getSession();
+    const session = getSession(sessionId);
     session.blockedCalls++;
 
     const sanitizedInput: Record<string, unknown> = {};
@@ -207,8 +207,8 @@ export function checkInputSafety(
 /**
  * Enforces a maximum number of tool calls per session.
  */
-export function checkToolCallLimit(): SecurityCheckResult {
-  const session = getSession();
+export function checkToolCallLimit(sessionId?: string): SecurityCheckResult {
+  const session = getSession(sessionId);
   if (session.totalCalls >= MAX_CALLS_PER_SESSION) {
     session.blockedCalls++;
     return {
@@ -224,8 +224,8 @@ export function checkToolCallLimit(): SecurityCheckResult {
 /**
  * Enforces a maximum number of tool calls per minute.
  */
-export function checkRateLimit(): SecurityCheckResult {
-  const session = getSession();
+export function checkRateLimit(sessionId?: string): SecurityCheckResult {
+  const session = getSession(sessionId);
   const now = Date.now();
   session.pruneCallTimestamps();
 
@@ -271,8 +271,8 @@ export function checkFileSizeForWrite(sizeBytes: number): SecurityCheckResult {
 /**
  * Returns current security statistics.
  */
-export function getSecurityStats(): SecurityStats {
-  const session = getSession();
+export function getSecurityStats(sessionId?: string): SecurityStats {
+  const session = getSession(sessionId);
   session.pruneCallTimestamps();
   return {
     totalCalls: session.totalCalls,
@@ -284,10 +284,10 @@ export function getSecurityStats(): SecurityStats {
 }
 
 /**
- * Resets all security stats for the current session.
+ * Resets all security stats for a session.
  */
-export function resetSecurityStats(): void {
-  getSession().reset();
+export function resetSecurityStats(sessionId?: string): void {
+  getSession(sessionId).reset();
 }
 
 /**

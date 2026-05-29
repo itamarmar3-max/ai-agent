@@ -108,15 +108,17 @@ export function determineParallelGroups(
     const isParallelSafe = ['read_file', 'list_files', 'web_search', 'scholar_search', 'url_metadata', 'math_eval', 'uuid_generate', 'datetime_info', 'get_current_time'].includes(tc.name);
 
     if (isWriteFile) {
-      // write_file calls can run in parallel only if they target different paths
+      // write_file calls can run in parallel only if they target different paths.
+      // Conflicting-path writes are moved to sequential so neither is dropped.
       const targetPath = tc.input?.file_path ?? tc.input?.path ?? '';
-      if (targetPath && !writeOps.has(targetPath)) {
+      if (!targetPath) {
+        sequentialOps.push(tc);
+      } else if (!writeOps.has(targetPath)) {
         writeOps.set(targetPath, tc);
-      } else if (!targetPath) {
-        // No path info — treat as sequential
+      } else {
+        // Same path — serialize to avoid lost writes
         sequentialOps.push(tc);
       }
-      // If path conflicts, skip (already queued)
     } else if (isParallelSafe) {
       parallelCapable.push(tc);
     } else {

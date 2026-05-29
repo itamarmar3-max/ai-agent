@@ -60,9 +60,9 @@ export async function initializeMemory(): Promise<string> {
  * Saves important short-term memory items to long-term memory.
  * Persists files created and key decisions from the current session.
  */
-export async function saveSessionMemory(): Promise<void> {
+export async function saveSessionMemory(sessionId?: string): Promise<void> {
   try {
-    const memory = getShortTermMemory();
+    const memory = getShortTermMemory(sessionId);
 
     // Persist files created during this session as long-term facts
     if (memory.filesCreated.length > 0) {
@@ -73,10 +73,10 @@ export async function saveSessionMemory(): Promise<void> {
 
     // Persist key decisions as long-term facts
     if (memory.decisions.length > 0) {
-      // Only save the last 10 decisions to avoid bloat
       const recentDecisions = memory.decisions.slice(-10);
-      for (const decision of recentDecisions) {
-        await addFact(`decision_${Date.now()}`, decision);
+      for (let i = 0; i < recentDecisions.length; i++) {
+        // Use index offset to avoid same-millisecond key collisions
+        await addFact(`decision_${Date.now()}_${i}`, recentDecisions[i]);
       }
     }
   } catch {
@@ -88,8 +88,8 @@ export async function saveSessionMemory(): Promise<void> {
  * Combines short-term and long-term memory contexts into a single string
  * for injection into the LLM context.
  */
-export async function getFullMemoryContext(): Promise<string> {
-  const shortTermCtx = getShortTermCtx();
+export async function getFullMemoryContext(sessionId?: string): Promise<string> {
+  const shortTermCtx = getShortTermCtx(sessionId);
   const longTermCtx = await getLongTermCtx();
 
   const parts: string[] = [];

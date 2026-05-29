@@ -26,7 +26,6 @@ export interface ShortTermMemory {
 // ---------------------------------------------------------------------------
 
 const sessions = new Map<string, ShortTermMemory>();
-let currentSessionId = 'default';
 
 function createEmptyMemory(): ShortTermMemory {
   return {
@@ -38,17 +37,17 @@ function createEmptyMemory(): ShortTermMemory {
 }
 
 export function setMemorySession(sessionId: string): void {
-  currentSessionId = sessionId;
   if (!sessions.has(sessionId)) {
     sessions.set(sessionId, createEmptyMemory());
   }
 }
 
-function getMemory(): ShortTermMemory {
-  let memory = sessions.get(currentSessionId);
+function getMemory(sessionId?: string): ShortTermMemory {
+  const id = sessionId ?? 'default';
+  let memory = sessions.get(id);
   if (!memory) {
     memory = createEmptyMemory();
-    sessions.set(currentSessionId, memory);
+    sessions.set(id, memory);
   }
   return memory;
 }
@@ -60,8 +59,8 @@ function getMemory(): ShortTermMemory {
 /**
  * Returns the current session memory.
  */
-export function getShortTermMemory(): ShortTermMemory {
-  return getMemory();
+export function getShortTermMemory(sessionId?: string): ShortTermMemory {
+  return getMemory(sessionId);
 }
 
 /**
@@ -71,8 +70,9 @@ export function addToolOutput(
   tool: string,
   input: Record<string, unknown>,
   output: string,
+  sessionId?: string,
 ): void {
-  const memory = getMemory();
+  const memory = getMemory(sessionId);
   memory.toolOutputs.push({
     tool,
     input,
@@ -85,8 +85,8 @@ export function addToolOutput(
 /**
  * Records a decision made during the session.
  */
-export function addDecision(decision: string): void {
-  const memory = getMemory();
+export function addDecision(decision: string, sessionId?: string): void {
+  const memory = getMemory(sessionId);
   memory.decisions.push(decision);
   memory.lastUpdated = Date.now();
 }
@@ -94,8 +94,8 @@ export function addDecision(decision: string): void {
 /**
  * Records a file that was created during the session.
  */
-export function addFileCreated(filePath: string): void {
-  const memory = getMemory();
+export function addFileCreated(filePath: string, sessionId?: string): void {
+  const memory = getMemory(sessionId);
   if (!memory.filesCreated.includes(filePath)) {
     memory.filesCreated.push(filePath);
   }
@@ -105,8 +105,8 @@ export function addFileCreated(filePath: string): void {
 /**
  * Returns a formatted summary of all short-term memory for injection into LLM context.
  */
-export function getMemoryContext(): string {
-  const memory = getMemory();
+export function getMemoryContext(sessionId?: string): string {
+  const memory = getMemory(sessionId);
   const lines: string[] = [];
   lines.push('=== Short-Term Memory (Current Session) ===');
   lines.push('');
@@ -142,10 +142,11 @@ export function getMemoryContext(): string {
 }
 
 /**
- * Clears all short-term memory for the current session.
+ * Clears all short-term memory for the given session.
  */
-export function clearMemory(): void {
-  sessions.set(currentSessionId, createEmptyMemory());
+export function clearMemory(sessionId?: string): void {
+  const id = sessionId ?? 'default';
+  sessions.set(id, createEmptyMemory());
 }
 
 /**
@@ -158,8 +159,8 @@ export function shouldSummarize(messageCount: number): boolean {
 /**
  * Trims old entries, keeping only the last 5 tool outputs and last 10 decisions.
  */
-export function summarizeMemory(): void {
-  const memory = getMemory();
+export function summarizeMemory(sessionId?: string): void {
+  const memory = getMemory(sessionId);
   if (memory.toolOutputs.length > 5) {
     memory.toolOutputs = memory.toolOutputs.slice(-5);
   }

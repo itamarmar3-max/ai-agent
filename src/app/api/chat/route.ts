@@ -47,6 +47,13 @@ export async function POST(request: Request) {
     );
   }
 
+  if (body.messages.length > 500) {
+    return new Response(
+      JSON.stringify({ error: 'messages array exceeds maximum length of 500' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
   if (!body.settings?.primaryApi?.apiKey) {
     return new Response(
       JSON.stringify({ error: 'API key is required in settings.primaryApi' }),

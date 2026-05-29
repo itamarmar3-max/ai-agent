@@ -10,7 +10,8 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export interface HealthDetails {
+export interface HealthMetrics {
+  status: 'healthy' | 'degraded' | 'unhealthy';
   apiAvgResponseMs: number;
   apiP95ResponseMs: number;
   apiErrorRate: number;
@@ -18,11 +19,6 @@ export interface HealthDetails {
   tokensUsed: number;
   errorsPerMinute: number;
   mostFailingTool: string | null;
-}
-
-export interface HealthMetrics {
-  status: 'healthy' | 'degraded' | 'unhealthy';
-  details: HealthDetails;
   uptime: number;
   totalToolCalls: number;
   totalAPICalls: number;
@@ -51,6 +47,7 @@ interface ToolCallRecord {
 // ---------------------------------------------------------------------------
 
 const MAX_API_HISTORY = 100;
+const MAX_TOOL_HISTORY = 500;
 const ERROR_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 // ---------------------------------------------------------------------------
@@ -101,6 +98,9 @@ export class HealthMonitor {
       success,
       timestamp: Date.now(),
     });
+    if (this.toolCallHistory.length > MAX_TOOL_HISTORY) {
+      this.toolCallHistory = this.toolCallHistory.slice(-MAX_TOOL_HISTORY);
+    }
 
     if (!success) {
       this.errorTimestamps.push(Date.now());
@@ -117,32 +117,24 @@ export class HealthMonitor {
   // ── Query API ──────────────────────────────────────────────────────────
 
   /**
-   * Get the overall health status of the system.
+   * Get full metrics for UI display.
+   * Shape matches types/index.ts HealthMetrics exactly.
    */
-  getHealthStatus(): { status: 'healthy' | 'degraded' | 'unhealthy'; details: HealthDetails } {
-    const details = this.computeDetails();
-    const { apiErrorRate } = details;
+  getMetrics(): HealthMetrics {
+    const computed = this.computeDetails();
 
     let status: 'healthy' | 'degraded' | 'unhealthy';
-    if (apiErrorRate < 0.05) {
+    if (computed.apiErrorRate < 0.05) {
       status = 'healthy';
-    } else if (apiErrorRate < 0.2) {
+    } else if (computed.apiErrorRate < 0.2) {
       status = 'degraded';
     } else {
       status = 'unhealthy';
     }
 
-    return { status, details };
-  }
-
-  /**
-   * Get full metrics for UI display.
-   */
-  getMetrics(): HealthMetrics {
-    const { status, details } = this.getHealthStatus();
     return {
       status,
-      details,
+      ...computed,
       uptime: Date.now() - this.startTime,
       totalToolCalls: this.toolCallHistory.length,
       totalAPICalls: this.apiCallHistory.length,
@@ -162,7 +154,7 @@ export class HealthMonitor {
 
   // ── private helpers ─────────────────────────────────────────────────
 
-  private computeDetails(): HealthDetails {
+  private computeDetails(): Omit<HealthMetrics, 'status' | 'uptime' | 'totalToolCalls' | 'totalAPICalls'> {
     // ── API metrics ───────────────────────────────────────────────────
     let apiAvgResponseMs = 0;
     let apiP95ResponseMs = 0;

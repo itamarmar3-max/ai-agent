@@ -1,6 +1,17 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 
+const BLOCKED_HOSTS_FETCH = /^(localhost|127\.|0\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|::1|fc00:|fe80:)/i;
+
+function isPrivateHostFetch(rawUrl: string): boolean {
+  try {
+    const { hostname } = new URL(rawUrl);
+    return BLOCKED_HOSTS_FETCH.test(hostname);
+  } catch {
+    return true;
+  }
+}
+
 /**
  * fetch_api - Make HTTP GET or POST requests to any external API URL.
  */
@@ -16,6 +27,9 @@ export const fetchApiTool = tool(
     headers?: string;
     body?: string;
   }): Promise<string> => {
+    if (isPrivateHostFetch(url)) {
+      return `Error: Requests to private/internal network addresses are not allowed.`;
+    }
     try {
       const reqMethod = (method || 'GET').toUpperCase();
       const parsedHeaders: Record<string, string> = {
