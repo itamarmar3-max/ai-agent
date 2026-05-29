@@ -22,6 +22,8 @@ import type { ChatMessage, AppSettings } from '@/types';
  *  - skill_detected: skill was auto-detected for this message
  *  - skill_clarify: skill needs user clarification
  *  - retry: API retry in progress
+ *  - context_compressed: conversation history was compressed to fit the window
+ *  - rag_injected: project RAG context was retrieved and injected
  *  - health_update: health metrics update
  *  - done: agent finished
  *  - error: fatal error
@@ -62,10 +64,18 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      // Helper to push an SSE event.
+      // Helper to push an SSE event. Guarded so a client disconnect (which
+      // closes the controller) can't turn a late enqueue into an unhandled
+      // throw that masks the real error or rejects the stream.
+      let closed = false;
       function sendEvent(event: { type: string; data: unknown }) {
-        const payload = `data: ${JSON.stringify(event)}\n\n`;
-        controller.enqueue(encoder.encode(payload));
+        if (closed) return;
+        try {
+          const payload = `data: ${JSON.stringify(event)}\n\n`;
+          controller.enqueue(encoder.encode(payload));
+        } catch {
+          closed = true;
+        }
       }
 
       // Track API call timing for health monitoring
@@ -131,6 +141,12 @@ export async function POST(request: Request) {
           // Surface transient LLM-call retries to the UI (rate limits, 5xx, …)
           sendEvent({ type: 'retry', data: info });
         },
+        onContextCompressed() {
+          sendEvent({ type: 'context_compressed', data: {} });
+        },
+        onRagInjected() {
+          sendEvent({ type: 'rag_injected', data: {} });
+        },
         connectedProject: body.project as string | null,
         onDone() {
           // Record overall API call for health monitoring
@@ -171,7 +187,8 @@ export async function POST(request: Request) {
         sendEvent({ type: 'error', data: msg });
         sendEvent({ type: 'done', data: {} });
       } finally {
-        controller.close();
+        closed = true;
+        try { controller.close(); } catch { /* already closed by a disconnect */ }
       }
     },
   });

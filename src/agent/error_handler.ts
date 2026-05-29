@@ -66,19 +66,30 @@ export async function executeWithRetry(
   let lastError = '';
 
   for (let attempt = 0; attempt <= mergedConfig.maxRetries; attempt++) {
+    const delay = Math.min(
+      mergedConfig.baseDelayMs * Math.pow(2, attempt) + Math.random() * 500,
+      mergedConfig.maxDelayMs,
+    );
     try {
       const output = await fn();
+      // Tools signal hard failures by RETURNING an "Error..." string rather
+      // than throwing, so the resolved value must be inspected too. Only retry
+      // when the failure is genuinely transient (timeout / network / rate
+      // limit / 5xx) — see shouldRetry — so we never burn backoff on a
+      // permanent error like "file not found" or a validation failure.
+      if (output.startsWith('Error') && attempt < mergedConfig.maxRetries && shouldRetry(output, attempt)) {
+        lastError = output;
+        await sleep(delay);
+        continue;
+      }
       return { output, retries: attempt };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-
-      if (attempt < mergedConfig.maxRetries) {
-        const delay = Math.min(
-          mergedConfig.baseDelayMs * Math.pow(2, attempt) + Math.random() * 500,
-          mergedConfig.maxDelayMs,
-        );
+      if (attempt < mergedConfig.maxRetries && shouldRetry(lastError, attempt)) {
         await sleep(delay);
+        continue;
       }
+      return { output: `Error: ${lastError}`, retries: attempt };
     }
   }
 
@@ -210,16 +221,9 @@ export function shouldRetry(error: string, retryCount: number): boolean {
     return true;
   }
 
-  // Retry "not found" errors once (might be a race condition)
-  if (
-    lowerError.includes('not found') &&
-    retryCount < 1
-  ) {
-    return true;
-  }
-
-  // Default: allow retry if under limit
-  return true;
+  // Everything else (validation, bad input, "not found", parse errors) is not
+  // transient — retrying won't fix it, so fail fast instead of burning backoff.
+  return false;
 }
 
 /**

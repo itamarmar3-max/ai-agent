@@ -92,15 +92,18 @@ export async function executeToolsInParallel(
  * Analyzes tool calls and groups them into parallel batches.
  * Tools that don't depend on each other are grouped together.
  */
-export function determineParallelGroups(
-  toolCalls: Array<{ name: string; input: any }>,
-): Array<Array<{ name: string; input: any }>> {
+export function determineParallelGroups<T extends { name: string; input: any }>(
+  toolCalls: T[],
+): T[][] {
   if (toolCalls.length === 0) return [];
 
-  // Separate by dependency characteristics
-  const parallelCapable: Array<{ name: string; input: any }> = [];
-  const writeOps: Map<string, { name: string; input: any }> = new Map();
-  const sequentialOps: Array<{ name: string; input: any }> = [];
+  // Separate by dependency characteristics. Generic over T so any extra fields
+  // carried on each call (notably the original tool_call `id`) are preserved
+  // through the regrouping — the caller relies on this to pair each result
+  // with the correct tool_call_id after reordering.
+  const parallelCapable: T[] = [];
+  const writeOps: Map<string, T> = new Map();
+  const sequentialOps: T[] = [];
 
   for (const tc of toolCalls) {
     const isWriteFile = tc.name === 'write_file' || tc.name === 'generate_file_structure';
@@ -124,7 +127,7 @@ export function determineParallelGroups(
     }
   }
 
-  const groups: Array<Array<{ name: string; input: any }>> = [];
+  const groups: T[][] = [];
 
   // Group 1: All parallel-safe reads/searches
   if (parallelCapable.length > 0) {

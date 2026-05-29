@@ -100,8 +100,12 @@ export function classifyIntent(message: string, hasAttachments = false): IntentR
     };
   }
 
-  // Pure greeting or smalltalk
-  if (isPureGreeting(trimmed) || matchesAny(trimmed, SMALLTALK_PHRASES) && trimmed.length < 40) {
+  // Pure greeting or smalltalk. Must match the WHOLE short message, not merely
+  // CONTAIN a smalltalk word — "help me build a website" contains "help" but is
+  // clearly a task. (Also fixes the && / || precedence ambiguity.)
+  const normalized = trimmed.toLowerCase().replace(/[?!.,;:]/g, '').trim();
+  const isShortSmalltalk = trimmed.length < 40 && SMALLTALK_PHRASES.some((p) => p === normalized);
+  if (isPureGreeting(trimmed) || isShortSmalltalk) {
     return {
       intent: 'smalltalk',
       reason: 'greeting / acknowledgement',

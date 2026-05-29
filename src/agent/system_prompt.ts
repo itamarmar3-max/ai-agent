@@ -11,6 +11,7 @@ export interface SystemPromptContext {
   skillSystemPrompt?: string;
   memoryContext?: string;
   taskDecomposition?: string;
+  multiAgentPlan?: string;
   hasGithubToken?: boolean;
   mode?: 'quick' | 'smart' | 'deep';
   intent?: 'smalltalk' | 'question' | 'task';
@@ -26,6 +27,7 @@ export function buildSystemPrompt(context: SystemPromptContext = {}): string {
     skillSystemPrompt,
     memoryContext,
     taskDecomposition,
+    multiAgentPlan,
     hasGithubToken,
     mode = 'smart',
     intent = 'question',
@@ -47,6 +49,10 @@ export function buildSystemPrompt(context: SystemPromptContext = {}): string {
 
   if (taskDecomposition) {
     prompt += `\n\n--- Task Plan ---\n${taskDecomposition}`;
+  }
+
+  if (multiAgentPlan) {
+    prompt += `\n\n--- Multi-Agent Execution Plan (planner → executor → reviewer) ---\n${multiAgentPlan}\n\nTreat this as your contract. After each major step, briefly note what was done and what remains.`;
   }
 
   return prompt;

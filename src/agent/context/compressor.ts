@@ -44,8 +44,17 @@ export function compressIfNeeded(
     return messages;
   }
   
-  // Need compression
-  const splitPoint = Math.floor(messages.length * COMPRESSION_TARGET);
+  // Need compression. Always keep a window of the most recent turns intact
+  // (which includes the active user request at the tail) so compression can
+  // never summarize away the message the agent is supposed to answer.
+  const MIN_KEEP = 6;
+  const splitPoint = Math.min(
+    Math.floor(messages.length * COMPRESSION_TARGET),
+    Math.max(0, messages.length - MIN_KEEP),
+  );
+  if (splitPoint <= 0) {
+    return messages;
+  }
   const toCompress = messages.slice(0, splitPoint);
   const toKeep = messages.slice(splitPoint);
   
