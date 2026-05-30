@@ -54,6 +54,31 @@ export async function POST(request: Request) {
     );
   }
 
+
+  const invalidMessage = body.messages.find(
+    (m) => !m || !['user', 'assistant', 'system'].includes(m.role) || typeof m.content !== 'string',
+  );
+  if (invalidMessage) {
+    return new Response(
+      JSON.stringify({ error: 'Each message must have a valid role and string content' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  if (body.messages.some((m) => m.content.length > 200_000)) {
+    return new Response(
+      JSON.stringify({ error: 'message content exceeds maximum length of 200000 characters' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  if (body.mode && !['quick', 'smart', 'deep'].includes(body.mode)) {
+    return new Response(
+      JSON.stringify({ error: 'mode must be one of: quick, smart, deep' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
   if (!body.settings?.primaryApi?.apiKey) {
     return new Response(
       JSON.stringify({ error: 'API key is required in settings.primaryApi' }),
@@ -64,6 +89,13 @@ export async function POST(request: Request) {
   const { messages, settings } = body;
   const api = settings.primaryApi;
   const imageApi = settings.imageApi;
+
+  if (!api.baseUrl || !api.model) {
+    return new Response(
+      JSON.stringify({ error: 'settings.primaryApi.baseUrl and model are required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
 
   const encoder = new TextEncoder();
 

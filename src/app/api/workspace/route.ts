@@ -1,11 +1,12 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { WorkspaceFile } from '@/types';
+import { getWorkspaceRoot, resolveInsideRoot } from '@/agent/workspace';
 
 /**
  * Workspace root — all file operations are sandboxed here.
  */
-const WORKSPACE_ROOT = path.resolve(process.cwd(), 'workspace');
+const WORKSPACE_ROOT = getWorkspaceRoot();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,8 +16,8 @@ const WORKSPACE_ROOT = path.resolve(process.cwd(), 'workspace');
  * Ensure resolved path stays inside WORKSPACE_ROOT (path traversal guard).
  */
 function safePath(userPath: string): string {
-  const resolved = path.resolve(WORKSPACE_ROOT, userPath);
-  if (!resolved.startsWith(WORKSPACE_ROOT)) {
+  const resolved = resolveInsideRoot(WORKSPACE_ROOT, userPath);
+  if (!resolved) {
     throw new Error('Path traversal detected');
   }
   return resolved;

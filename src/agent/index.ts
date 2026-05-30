@@ -402,6 +402,7 @@ export async function runAgent(
   let executorModule: {
     determineParallelGroups: (calls: Array<{ name: string; input: any }>) => Array<Array<{ name: string; input: any }>>;
     executeToolsInParallel: (execs: any[], toolMap: Map<string, any>) => Promise<any[]>;
+    executeToolWithTimeout: (tool: any, input: Record<string, unknown>, timeoutMs: number) => Promise<{ output: string; duration: number }>;
   } | null = null;
 
   let errorHandlerModule: {
@@ -611,14 +612,29 @@ export async function runAgent(
             // Execute with retry if error_handler is available
             if (errorHandlerModule) {
               const retryResult = await errorHandlerModule.executeWithRetry(
-                () => tool.invoke(toolInput).then((r) => typeof r === 'string' ? r : JSON.stringify(r)),
+                async () => {
+                  const execution = executorModule
+                    ? await executorModule.executeToolWithTimeout(tool, toolInput, 20_000)
+                    : {
+                        output: await tool.invoke(toolInput).then((r) => typeof r === 'string' ? r : JSON.stringify(r)),
+                      };
+                  if (execution.output.startsWith('Error:')) {
+                    throw new Error(execution.output.slice('Error:'.length).trim());
+                  }
+                  return execution.output;
+                },
               );
               outputStr = retryResult.output;
               retryCount = retryResult.retries;
             } else {
               // Original behavior: no retry
-              const output = await tool.invoke(toolInput);
-              outputStr = typeof output === 'string' ? output : JSON.stringify(output);
+              if (executorModule) {
+                const execution = await executorModule.executeToolWithTimeout(tool, toolInput, 20_000);
+                outputStr = execution.output;
+              } else {
+                const output = await tool.invoke(toolInput);
+                outputStr = typeof output === 'string' ? output : JSON.stringify(output);
+              }
             }
 
             const toolDuration = Date.now() - toolStart;

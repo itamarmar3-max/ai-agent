@@ -2,6 +2,7 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { readFile, mkdir, stat } from 'fs/promises';
 import path from 'path';
+import { getWorkspaceRoot, resolveInsideRoot } from '../workspace';
 
 /**
  * Extract (unpack) a ZIP file from the workspace into a directory.
@@ -13,20 +14,20 @@ export const extractZipTool = tool(
     destination?: string;
   }): Promise<string> => {
     try {
-      const workspaceDir = path.resolve(process.cwd(), 'workspace');
-      const fullZipPath = path.resolve(workspaceDir, zip_path);
+      const workspaceDir = getWorkspaceRoot();
+      const fullZipPath = resolveInsideRoot(workspaceDir, zip_path);
 
       // Path traversal guard
-      if (!fullZipPath.startsWith(workspaceDir)) {
+      if (!fullZipPath) {
         return 'Error: ZIP file path must be within the workspace directory.';
       }
 
       // Determine destination directory
       const destName = destination || zip_path.replace(/\.zip$/i, '') || 'extracted';
-      const fullDestPath = path.resolve(workspaceDir, destName);
+      const fullDestPath = resolveInsideRoot(workspaceDir, destName);
 
       // Path traversal guard for destination
-      if (!fullDestPath.startsWith(workspaceDir)) {
+      if (!fullDestPath) {
         return 'Error: Destination path must be within the workspace directory.';
       }
 
@@ -75,6 +76,15 @@ export const extractZipTool = tool(
       let totalSize = 0;
 
       for (const entry of entries) {
+        const normalizedEntry = entry.entryName.replace(/\\/g, '/');
+        if (normalizedEntry.startsWith('/') || normalizedEntry.includes('../')) {
+          return `Error: ZIP contains an unsafe path: "${entry.entryName}".`;
+        }
+        const targetPath = resolveInsideRoot(fullDestPath, normalizedEntry);
+        if (!targetPath) {
+          return `Error: ZIP entry would extract outside the destination: "${entry.entryName}".`;
+        }
+
         if (entry.isDirectory) {
           extractedDirs.push(entry.entryName);
         } else {
@@ -108,42 +118,36 @@ export const extractZipTool = tool(
       output.push(`Total size: ${sizeStr}`);
       output.push('');
 
-      // Show first 20 extracted files
       if (extractedFiles.length > 0) {
-        output.push('--- Extracted Files ---');
-        const showFiles = extractedFiles.slice(0, 20);
-        for (const f of showFiles) {
-          output.push(`  ${f}`);
+        output.push('Extracted files:');
+        for (const file of extractedFiles.slice(0, 50)) {
+          output.push(`  - ${file}`);
         }
-        if (extractedFiles.length > 20) {
-          output.push(`  ... and ${extractedFiles.length - 20} more files`);
+        if (extractedFiles.length > 50) {
+          output.push(`  ... and ${extractedFiles.length - 50} more files`);
         }
       }
-
-      output.push('');
-      output.push(
-        `The files have been extracted to the workspace at "${relDest}". ` +
-        `Use list_files to browse the extracted content.`
-      );
 
       return output.join('\n');
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      return `Error extracting ZIP file: ${msg}`;
+      return `Error extracting ZIP: ${msg}`;
     }
   },
   {
     name: 'extract_zip',
     description:
-      'Extract (unpack) a ZIP file from the workspace into a directory. All extracted files are placed in the workspace. Useful for unpacking downloaded archives, project templates, and compressed file collections.',
+      'Extract a ZIP archive from the workspace into a workspace directory. Validates archive paths to prevent traversal. Use after the user uploads or asks to unpack a ZIP file.',
     schema: z.object({
       zip_path: z
         .string()
-        .describe('Path to the ZIP file in the workspace (e.g., "archive.zip")'),
+        .min(1)
+        .describe('Path to the ZIP file relative to the workspace directory (e.g., "project.zip")'),
       destination: z
         .string()
+        .min(1)
         .optional()
-        .describe('Directory name to extract into (default: ZIP filename without extension)'),
+        .describe('Optional destination directory relative to workspace. Defaults to ZIP filename without .zip'),
     }),
   }
 );

@@ -5,6 +5,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import path from 'path';
+import { getMemoryDir } from '../workspace';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +24,7 @@ export interface ProjectContext {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROJECTS_DIR = '/home/z/my-project/workspace/memory/projects';
+const PROJECTS_DIR = path.join(getMemoryDir(), 'projects');
 
 // ---------------------------------------------------------------------------
 // Defaults
