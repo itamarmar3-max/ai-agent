@@ -2,6 +2,7 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import { getWorkspaceRoot } from '../workspace';
 
 /**
  * Take a screenshot of any webpage using Puppeteer.
@@ -27,7 +28,7 @@ export const webpageScreenshotTool = tool(
         );
       }
 
-      const workspaceDir = path.resolve(process.cwd(), 'workspace');
+      const workspaceDir = getWorkspaceRoot();
       await mkdir(workspaceDir, { recursive: true });
 
       const browser = await puppeteerModule.launch({

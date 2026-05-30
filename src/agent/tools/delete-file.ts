@@ -1,9 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { rm } from 'fs/promises';
-import path from 'path';
-
-const WORKSPACE_ROOT = '/home/z/my-project/workspace';
+import { resolveWorkspacePath, isInsideWorkspace } from '../workspace';
 
 /**
  * delete_file - Delete a file from the workspace.
@@ -11,10 +9,10 @@ const WORKSPACE_ROOT = '/home/z/my-project/workspace';
 export const deleteFileTool = tool(
   async ({ path: filePath }: { path: string }): Promise<string> => {
     try {
-      const resolvedPath = path.resolve(WORKSPACE_ROOT, filePath);
+      const resolvedPath = resolveWorkspacePath(filePath);
 
       // Security check: ensure path is within workspace
-      if (!resolvedPath.startsWith(WORKSPACE_ROOT)) {
+      if (!isInsideWorkspace(resolvedPath)) {
         return `Error: Path "${filePath}" is outside the workspace directory.`;
       }
 
@@ -31,9 +29,9 @@ export const deleteFileTool = tool(
   {
     name: 'delete_file',
     description:
-      'Delete a file or directory from the workspace. Provide the file path relative to workspace root.',
+      'Delete a file or directory from the workspace. Provide the file path relative to workspace root. Destructive: only use when the user explicitly asks to remove files.',
     schema: z.object({
-      path: z.string().describe('The file path relative to workspace root'),
+      path: z.string().min(1).describe('The file path relative to workspace root'),
     }),
   }
 );

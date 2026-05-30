@@ -8,8 +8,9 @@
 import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
+import { getProjectsDir, resolveInsideRoot, sanitizeWorkspaceName } from '../workspace';
 
-const PROJECTS_DIR = path.join(process.cwd(), 'src', 'workspace', 'projects');
+const PROJECTS_DIR = getProjectsDir();
 
 export interface ProjectInfo {
   name: string;
@@ -99,20 +100,30 @@ function getAllFiles(dirPath: string, basePath: string = ''): string[] {
 export function extractZipProject(zipBuffer: Buffer, projectName: string): ProjectInfo {
   ensureProjectsDir();
 
-  const projectPath = path.join(PROJECTS_DIR, projectName);
+  const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+  const projectPath = path.join(PROJECTS_DIR, safeProjectName);
 
   if (fs.existsSync(projectPath)) {
     fs.rmSync(projectPath, { recursive: true });
   }
 
   const zip = new AdmZip(zipBuffer);
+  for (const entry of zip.getEntries()) {
+    const normalizedEntry = entry.entryName.replace(/\\/g, '/');
+    if (normalizedEntry.startsWith('/') || normalizedEntry.includes('../')) {
+      throw new Error(`ZIP contains an unsafe path: ${entry.entryName}`);
+    }
+    if (!resolveInsideRoot(projectPath, normalizedEntry)) {
+      throw new Error(`ZIP entry would extract outside the project: ${entry.entryName}`);
+    }
+  }
   zip.extractAllTo(projectPath, true);
 
   const files = getAllFiles(projectPath);
   const type = detectProjectType(files);
 
   return {
-    name: projectName,
+    name: safeProjectName,
     path: projectPath,
     type,
     fileCount: files.length,
@@ -154,9 +165,12 @@ export function listProjects(): ProjectInfo[] {
  * Get a file's content from a project.
  */
 export function getProjectFile(projectName: string, filePath: string): ProjectFile | null {
-  const fullPath = path.join(PROJECTS_DIR, projectName, filePath);
-
   try {
+    const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+    const projectPath = path.join(PROJECTS_DIR, safeProjectName);
+    const fullPath = resolveInsideRoot(projectPath, filePath);
+    if (!fullPath) return null;
+
     if (!fs.existsSync(fullPath)) return null;
 
     const content = fs.readFileSync(fullPath, 'utf-8');
@@ -186,9 +200,12 @@ export function getProjectFile(projectName: string, filePath: string): ProjectFi
  * Save a file in a project.
  */
 export function saveProjectFile(projectName: string, filePath: string, content: string): boolean {
-  const fullPath = path.join(PROJECTS_DIR, projectName, filePath);
-
   try {
+    const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+    const projectPath = path.join(PROJECTS_DIR, safeProjectName);
+    const fullPath = resolveInsideRoot(projectPath, filePath);
+    if (!fullPath) return false;
+
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -204,9 +221,12 @@ export function saveProjectFile(projectName: string, filePath: string, content: 
  * Delete a file in a project.
  */
 export function deleteProjectFile(projectName: string, filePath: string): boolean {
-  const fullPath = path.join(PROJECTS_DIR, projectName, filePath);
-
   try {
+    const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+    const projectPath = path.join(PROJECTS_DIR, safeProjectName);
+    const fullPath = resolveInsideRoot(projectPath, filePath);
+    if (!fullPath) return false;
+
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);
       return true;
@@ -226,11 +246,16 @@ export function getProjectTree(projectName: string): Array<{
   type: 'file' | 'directory';
   children?: Array<{ name: string; path: string; type: 'file' | 'directory'; children?: any[] }>;
 }> {
-  const projectPath = path.join(PROJECTS_DIR, projectName);
+  try {
+    const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+    const projectPath = path.join(PROJECTS_DIR, safeProjectName);
 
-  if (!fs.existsSync(projectPath)) return [];
+    if (!fs.existsSync(projectPath)) return [];
 
-  return buildTree(projectPath, '');
+    return buildTree(projectPath, '');
+  } catch {
+    return [];
+  }
 }
 
 function buildTree(dirPath: string, basePath: string): any[] {
@@ -278,9 +303,10 @@ function buildTree(dirPath: string, basePath: string): any[] {
  * Delete an entire project.
  */
 export function deleteProject(projectName: string): boolean {
-  const projectPath = path.join(PROJECTS_DIR, projectName);
-
   try {
+    const safeProjectName = sanitizeWorkspaceName(projectName, 'project name');
+    const projectPath = path.join(PROJECTS_DIR, safeProjectName);
+
     if (fs.existsSync(projectPath)) {
       fs.rmSync(projectPath, { recursive: true });
       return true;

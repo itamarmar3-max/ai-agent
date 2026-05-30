@@ -1,7 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { readFile } from 'fs/promises';
-import path from 'path';
+import { resolveWorkspacePath, isInsideWorkspace } from '../workspace';
 
 /**
  * Extract text from PDF files using the pdf-parse library.
@@ -10,11 +10,10 @@ import path from 'path';
 export const extractTextFromPdfTool = tool(
   async ({ file_path }: { file_path: string }): Promise<string> => {
     try {
-      const workspaceDir = path.resolve(process.cwd(), 'workspace');
-      const fullPath = path.resolve(workspaceDir, file_path);
+      const fullPath = resolveWorkspacePath(file_path);
 
       // Path traversal guard
-      if (!fullPath.startsWith(workspaceDir)) {
+      if (!isInsideWorkspace(fullPath)) {
         return 'Error: File path must be within the workspace directory.';
       }
 
@@ -130,6 +129,7 @@ export const extractTextFromPdfTool = tool(
     schema: z.object({
       file_path: z
         .string()
+        .min(1)
         .describe('Path to the PDF file relative to the workspace directory (e.g., "document.pdf")'),
     }),
   }

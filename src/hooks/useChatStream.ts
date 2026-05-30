@@ -31,6 +31,15 @@ export function useChatStream() {
       if (!trimmed && attachments.length === 0) return;
       if (useChatStore.getState().isStreaming) return;
 
+      const settings = useChatStore.getState().settings;
+      if (!settings.primaryApi.apiKey) {
+        toast.warning('API key missing', {
+          description: 'Open Settings to configure your API key before sending a message.',
+          duration: 5000,
+        });
+        return;
+      }
+
       const userMessage: ChatMessage = {
         id: generateId(),
         role: 'user',
@@ -54,15 +63,6 @@ export function useChatStream() {
       addMessage(userMessage);
       addMessage(assistantMessage);
       setStreaming(true);
-
-      // Check for missing API key
-      const settings = useChatStore.getState().settings;
-      if (!settings.primaryApi.apiKey) {
-        toast.warning('API key missing', {
-          description: 'Open Settings to configure your API key.',
-          duration: 5000,
-        });
-      }
 
       const abortController = new AbortController();
       abortControllerRef.current = abortController;

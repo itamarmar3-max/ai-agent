@@ -8,8 +8,9 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { getChatsDir } from '../workspace';
 
-const CHATS_DIR = path.join(process.cwd(), 'src', 'workspace', 'chats');
+const CHATS_DIR = getChatsDir();
 
 export interface ChatSession {
   id: string;

@@ -1,11 +1,12 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import JSZip from 'jszip';
+import { getWorkspaceRoot } from '@/agent/workspace';
 
 /**
  * Workspace root directory.
  */
-const WORKSPACE_ROOT = path.resolve(process.cwd(), 'workspace');
+const WORKSPACE_ROOT = getWorkspaceRoot();
 
 /**
  * GET /api/zip
@@ -27,8 +28,8 @@ export async function GET() {
       const entries = await fs.readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
-        // Skip hidden files
-        if (entry.name.startsWith('.')) continue;
+        // Skip hidden files and the generated output archive if present.
+        if (entry.name.startsWith('.') || (!prefix && entry.name === 'project.zip')) continue;
 
         const fullPath = path.join(dir, entry.name);
         const zipPath = prefix ? `${prefix}/${entry.name}` : entry.name;
