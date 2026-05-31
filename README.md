@@ -125,6 +125,22 @@ Open the **Settings** sheet (gear icon, top-right) and fill in:
 Settings persist in `localStorage`; they never leave the browser except as
 part of an API request to your chosen provider.
 
+### Optional environment variables
+
+Set these on the server (e.g. in `.env.local`) to enable extra capabilities:
+
+| Variable | Purpose |
+|----------|---------|
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` / `SERPAPI_API_KEY` | Use a real search API for `web_search` instead of the (fragile) DuckDuckGo HTML fallback. The first one set wins; the scraper is always kept as a last resort. |
+| `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error` \| `silent`. Controls the structured JSON request logs. |
+| `WORKSPACE_ROOT` | Override the agent's sandboxed workspace directory. |
+
+The agent also accepts a per-session **cost budget** (`costBudgetUsd` in
+`AgentConfig`): when the estimated spend crosses it, the loop stops gracefully
+instead of running up an unbounded bill. Every session now reports an
+`estimatedCostUsd` in its performance stats, and a **loop guard** halts the
+agent if it repeats the same tool call with identical arguments.
+
 ## Testing the new features
 
 ### 1. Intent classifier / fast path
@@ -185,6 +201,7 @@ in `skill_detector.ts` and add a detection rule.
 npm run build       # production build (standalone output)
 npm start           # serve the standalone build with Bun
 npm run lint        # ESLint
+npm test            # Vitest unit tests
 ```
 
 ## License
