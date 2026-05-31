@@ -1,15 +1,17 @@
 /**
- * RAG Indexer — Indexes project files into a vector store.
- * Uses vectra (local vector database) for embeddings storage.
+ * RAG Indexer — indexes project files and ranks them with a hybrid retriever.
+ *
+ * Scoring combines two signals:
+ *   • BM25 lexical relevance (rare-term weighting + length normalisation), and
+ *   • semantic cosine similarity over embeddings, when an embeddings endpoint
+ *     is configured (EMBEDDINGS_API_KEY).
+ * When embeddings are unavailable the retriever degrades gracefully to BM25
+ * alone — already a clear improvement over the previous raw TF-cosine.
  */
 
-import { chunkFile, isSupportedFile, type Chunk } from './chunker';
-
-/**
- * In-memory vector store for RAG.
- * Uses simple TF-IDF-like scoring for relevance when no embedding API is available.
- * Falls back gracefully if vectra is not installed.
- */
+import { chunkFile, isSupportedFile } from './chunker';
+import { Bm25, tokenize, normalizeScores } from './bm25';
+import { embedTexts, embedText, embeddingsEnabled, cosineSim } from './embeddings';
 
 interface StoredDocument {
   id: string;
@@ -22,55 +24,27 @@ interface StoredDocument {
     start_line: number;
     end_line: number;
   };
-  // Simple term frequency vector for basic search
-  termFreq: Map<string, number>;
+  tokens: string[];
+  embedding?: number[];
 }
 
-// Global in-memory store (persists for the lifetime of the server process)
-const indices: Map<string, Map<string, StoredDocument>> = new Map();
-
-/**
- * Generate a simple bag-of-words representation for text.
- */
-function buildTermFreq(text: string): Map<string, number> {
-  const terms = new Map<string, number>();
-  // Tokenize: lowercase, split on non-alphanumeric, filter short tokens
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9_\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 2);
-  
-  for (const word of words) {
-    terms.set(word, (terms.get(word) ?? 0) + 1);
-  }
-  return terms;
+interface ProjectIndex {
+  docs: Map<string, StoredDocument>;
+  bm25: Bm25;
+  hasEmbeddings: boolean;
 }
 
-/**
- * Calculate cosine similarity between two term frequency vectors.
- */
-function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
+// Weight of the semantic signal in the hybrid score (rest goes to BM25).
+const SEMANTIC_WEIGHT = 0.6;
+const SCORE_THRESHOLD = 0.05;
+const EMBED_BATCH = 64;
 
-  for (const [term, freqA] of a) {
-    normA += freqA * freqA;
-    const freqB = b.get(term) ?? 0;
-    dotProduct += freqA * freqB;
-  }
-
-  for (const freqB of b.values()) {
-    normB += freqB * freqB;
-  }
-
-  if (normA === 0 || normB === 0) return 0;
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
+// Global in-memory store (persists for the lifetime of the server process).
+const indices: Map<string, ProjectIndex> = new Map();
 
 /**
- * Index files for a project.
+ * Index files for a project. Embeds chunk contents in batches when embeddings
+ * are enabled; otherwise stores lexical data only.
  */
 export async function indexProject(
   projectName: string,
@@ -81,7 +55,8 @@ export async function indexProject(
   skippedFiles: number;
   totalChunks: number;
 }> {
-  const projectIndex = new Map<string, StoredDocument>();
+  const docs = new Map<string, StoredDocument>();
+  const bm25 = new Bm25();
   let indexedFiles = 0;
   let skippedFiles = 0;
   let totalChunks = 0;
@@ -93,9 +68,8 @@ export async function indexProject(
     }
 
     const chunks = chunkFile(file.path, file.content, projectName);
-    
     for (const chunk of chunks) {
-      const termFreq = buildTermFreq(chunk.content);
+      const tokens = tokenize(chunk.content);
       const doc: StoredDocument = {
         id: chunk.id,
         content: chunk.content,
@@ -107,15 +81,31 @@ export async function indexProject(
           start_line: chunk.start_line,
           end_line: chunk.end_line,
         },
-        termFreq,
+        tokens,
       };
-      projectIndex.set(chunk.id, doc);
+      docs.set(chunk.id, doc);
+      bm25.add(chunk.id, tokens);
       totalChunks++;
     }
     indexedFiles++;
   }
 
-  indices.set(projectName, projectIndex);
+  // Best-effort semantic embeddings (batched). Failure ⇒ lexical-only index.
+  let hasEmbeddings = false;
+  if (embeddingsEnabled() && docs.size > 0) {
+    const allDocs = [...docs.values()];
+    for (let i = 0; i < allDocs.length; i += EMBED_BATCH) {
+      const batch = allDocs.slice(i, i + EMBED_BATCH);
+      const vectors = await embedTexts(batch.map((d) => d.content));
+      if (!vectors) break;
+      batch.forEach((d, j) => {
+        if (vectors[j]) d.embedding = vectors[j];
+      });
+      hasEmbeddings = true;
+    }
+  }
+
+  indices.set(projectName, { docs, bm25, hasEmbeddings });
 
   return {
     totalFiles: files.length,
@@ -126,7 +116,7 @@ export async function indexProject(
 }
 
 /**
- * Search the index for relevant chunks.
+ * Search the index for relevant chunks using the hybrid scorer.
  */
 export async function searchIndex(
   projectName: string,
@@ -136,69 +126,63 @@ export async function searchIndex(
   id: string;
   content: string;
   score: number;
-  metadata: {
-    file_path: string;
-    chunk_index: number;
-    project_name: string;
-    language: string;
-    start_line: number;
-    end_line: number;
-  };
+  metadata: StoredDocument['metadata'];
 }>> {
-  const projectIndex = indices.get(projectName);
-  if (!projectIndex || projectIndex.size === 0) {
-    return [];
-  }
+  const index = indices.get(projectName);
+  if (!index || index.docs.size === 0) return [];
 
-  const queryTerms = buildTermFreq(query);
-  const results: Array<{
-    id: string;
-    content: string;
-    score: number;
-    metadata: StoredDocument['metadata'];
-  }> = [];
+  // --- Lexical (BM25), normalised to [0,1] -------------------------------
+  const queryTokens = tokenize(query);
+  const lexical = normalizeScores(index.bm25.scoreAll(queryTokens));
 
-  for (const [id, doc] of projectIndex) {
-    const score = cosineSimilarity(queryTerms, doc.termFreq);
-    if (score > 0.05) { // Minimum threshold
-      results.push({
-        id,
-        content: doc.content,
-        score,
-        metadata: doc.metadata,
-      });
+  // --- Semantic (embeddings cosine), normalised to [0,1] -----------------
+  let semantic = new Map<string, number>();
+  if (index.hasEmbeddings) {
+    const queryVec = await embedText(query);
+    if (queryVec) {
+      const raw = new Map<string, number>();
+      for (const doc of index.docs.values()) {
+        if (doc.embedding) raw.set(doc.id, Math.max(0, cosineSim(queryVec, doc.embedding)));
+      }
+      semantic = normalizeScores(raw);
     }
   }
 
-  // Sort by score descending and return top K
+  // --- Combine -----------------------------------------------------------
+  const useHybrid = semantic.size > 0;
+  const ids = new Set<string>([...lexical.keys(), ...semantic.keys()]);
+  const results: Array<{ id: string; content: string; score: number; metadata: StoredDocument['metadata'] }> = [];
+
+  for (const id of ids) {
+    const lex = lexical.get(id) ?? 0;
+    const sem = semantic.get(id) ?? 0;
+    const score = useHybrid ? SEMANTIC_WEIGHT * sem + (1 - SEMANTIC_WEIGHT) * lex : lex;
+    if (score <= SCORE_THRESHOLD) continue;
+    const doc = index.docs.get(id)!;
+    results.push({ id, content: doc.content, score, metadata: doc.metadata });
+  }
+
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, topK);
 }
 
-/**
- * Check if a project index exists.
- */
 export function hasIndex(projectName: string): boolean {
-  const projectIndex = indices.get(projectName);
-  return projectIndex !== undefined && projectIndex.size > 0;
+  const index = indices.get(projectName);
+  return index !== undefined && index.docs.size > 0;
 }
 
-/**
- * Get index stats.
- */
 export function getIndexStats(projectName: string): {
   documentCount: number;
   projects: string[];
+  semantic: boolean;
 } {
   return {
-    documentCount: indices.get(projectName)?.size ?? 0,
+    documentCount: indices.get(projectName)?.docs.size ?? 0,
     projects: [...indices.keys()],
+    semantic: indices.get(projectName)?.hasEmbeddings ?? false,
   };
 }
 
-/**
- * Clear a project index.
- */
 export function clearIndex(projectName: string): void {
   indices.delete(projectName);
 }

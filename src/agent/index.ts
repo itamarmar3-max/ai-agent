@@ -31,6 +31,8 @@ import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { Plan, Subtask, PerformanceStats, SkillInfo } from '@/types';
 import { compressIfNeeded } from './context/compressor';
 import { retrieveContext } from './rag';
+import { LoopGuard } from './loop_guard';
+import { CostTracker } from './cost';
 
 export type AgentMode = 'quick' | 'smart' | 'deep';
 
@@ -90,6 +92,9 @@ export interface AgentConfig {
   // conversations or accumulate globally for the life of the process.
   sessionId?: string;
   onRetry?: (info: { attempt: number; maxRetries: number; reason: string; waitMs?: number }) => void;
+  // Optional hard ceiling on estimated session spend (USD). When exceeded the
+  // loop stops gracefully instead of running up an unbounded bill.
+  costBudgetUsd?: number;
 }
 
 export interface AgentResult {
@@ -242,14 +247,32 @@ export async function runAgent(
   }
 
   // ---- 2. Create plan (only when intent calls for it) ---------------------
+  // In deep mode we spend one cheap LLM call on a real plan (robust to
+  // paraphrasing and non-English requests); elsewhere we use the zero-latency
+  // heuristic planner. The LLM planner falls back to the heuristic on failure.
   let plan: Plan | undefined;
   if (enablePlanning) {
-    try {
-      const planner = await import('./planner');
-      plan = planner.createPlan(lastUserMessage, [...getAllTools().map(t => t.name)]);
-      config.onPlan?.(plan);
-    } catch {
-      // non-critical
+    const toolNames = [...getAllTools(config.imageApiConfig, config.githubToken).map(t => t.name)];
+    if (mode === 'deep') {
+      try {
+        const { createPlanWithLLM } = await import('./planner_llm');
+        plan = await createPlanWithLLM(lastUserMessage, toolNames, {
+          apiKey: config.apiKey,
+          baseUrl: config.baseUrl,
+          model: config.model,
+        });
+        config.onPlan?.(plan);
+      } catch {
+        // non-critical
+      }
+    } else {
+      try {
+        const planner = await import('./planner');
+        plan = planner.createPlan(lastUserMessage, toolNames);
+        config.onPlan?.(plan);
+      } catch {
+        // non-critical
+      }
     }
   }
 
@@ -395,8 +418,12 @@ export async function runAgent(
   const result: AgentResult = { text: '', toolCalls: [], images: [], detectedSkill: detectedSkillInfo };
   let iteration = 0;
   const toolUsageCounts: Record<string, number> = {};
-  let totalTokens = 0;
   const responseTimes: number[] = [];
+
+  // Guards against the two classic runaway failure modes: spinning on the same
+  // tool call, and quietly running up an unbounded bill.
+  const loopGuard = new LoopGuard();
+  const costTracker = new CostTracker(config.model, config.costBudgetUsd);
 
   // Load executor and error_handler modules once
   let executorModule: {
@@ -408,6 +435,7 @@ export async function runAgent(
   let errorHandlerModule: {
     executeWithRetry: (fn: () => Promise<string>, config?: any) => Promise<{ output: string; retries: number }>;
     logError: (error: any) => Promise<void>;
+    getToolTimeout: (toolName: string) => number;
   } | null = null;
 
   let reflectionModule: {
@@ -512,19 +540,44 @@ export async function runAgent(
       const invokeDuration = Date.now() - invokeStart;
       responseTimes.push(invokeDuration);
 
-      // Accumulate token usage (was previously always 0). Prefer the
-      // provider's usage metadata; fall back to a char/4 estimate.
-      const usage = (response as { usage_metadata?: { total_tokens?: number } }).usage_metadata;
-      if (usage?.total_tokens) {
-        totalTokens += usage.total_tokens;
+      // Accumulate token usage + cost. Prefer the provider's usage metadata
+      // (split into input/output for accurate pricing); fall back to a char/4
+      // estimate of the output when the provider omits it.
+      const usage = (response as { usage_metadata?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } }).usage_metadata;
+      if (usage && (usage.input_tokens || usage.output_tokens)) {
+        costTracker.add(usage.input_tokens ?? 0, usage.output_tokens ?? 0);
       } else if (typeof response.content === 'string') {
-        totalTokens += Math.ceil(response.content.length / 4);
+        costTracker.add(0, Math.ceil(response.content.length / 4));
       }
 
       // If no tool calls, we are done — collect final text.
       if (!response.tool_calls || response.tool_calls.length === 0) {
         result.text = typeof response.content === 'string' ? response.content : '';
         break;
+      }
+
+      // ---- Cost budget guard ---------------------------------------------
+      if (costTracker.isOverBudget()) {
+        const reason = `Stopped: estimated session cost ($${costTracker.costUsd.toFixed(4)}) reached the configured budget.`;
+        config.onError?.(reason);
+        result.text = result.text || reason;
+        break;
+      }
+
+      // ---- Loop guard: stop if the model is repeating itself --------------
+      {
+        let loopReason: string | null = null;
+        for (const tc of response.tool_calls) {
+          const name = (tc as { name?: string }).name ?? 'unknown';
+          const input = (tc as { args?: Record<string, unknown> }).args ?? {};
+          const check = loopGuard.record(name, input);
+          if (check.looping) { loopReason = check.reason ?? 'Loop detected.'; break; }
+        }
+        if (loopReason) {
+          config.onError?.(loopReason);
+          result.text = result.text || `Stopped: ${loopReason}`;
+          break;
+        }
       }
 
       // Add the AI message (with tool_calls) to history.
@@ -610,11 +663,12 @@ export async function runAgent(
 
           try {
             // Execute with retry if error_handler is available
+            const toolTimeout = errorHandlerModule?.getToolTimeout?.(toolName) ?? 20_000;
             if (errorHandlerModule) {
               const retryResult = await errorHandlerModule.executeWithRetry(
                 async () => {
                   const execution = executorModule
-                    ? await executorModule.executeToolWithTimeout(tool, toolInput, 20_000)
+                    ? await executorModule.executeToolWithTimeout(tool, toolInput, toolTimeout)
                     : {
                         output: await tool.invoke(toolInput).then((r) => typeof r === 'string' ? r : JSON.stringify(r)),
                       };
@@ -629,7 +683,7 @@ export async function runAgent(
             } else {
               // Original behavior: no retry
               if (executorModule) {
-                const execution = await executorModule.executeToolWithTimeout(tool, toolInput, 20_000);
+                const execution = await executorModule.executeToolWithTimeout(tool, toolInput, toolTimeout);
                 outputStr = execution.output;
               } else {
                 const output = await tool.invoke(toolInput);
@@ -899,13 +953,17 @@ export async function runAgent(
     ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length
     : 0;
 
+  const costSnapshot = costTracker.snapshot();
   const performanceStats: PerformanceStats = {
     totalToolCalls: result.toolCalls.length,
-    totalTokens,
+    totalTokens: costSnapshot.totalTokens,
     sessionDuration,
     averageResponseTime: Math.round(averageResponseTime),
     toolUsageCounts,
     sessionStartTime,
+    estimatedCostUsd: costSnapshot.costUsd,
+    promptTokens: costSnapshot.inputTokens,
+    completionTokens: costSnapshot.outputTokens,
   };
 
   result.performance = performanceStats;

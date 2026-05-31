@@ -57,9 +57,9 @@ src/
 │   ├── memory/                 # Short- and long-term memory
 │   ├── multi_agent/            # Planner / Executor / Reviewer roles
 │   ├── reliability/            # Health monitor, retries, fallbacks
-│   ├── rag/                    # Local vector indexing + retrieval
+│   ├── rag/                    # Hybrid semantic + BM25 indexing + retrieval
 │   ├── skills/                 # 10 skill profiles (Android, Web, ...)
-│   └── tools/                  # 25+ tools (file, web, github, image, ...)
+│   └── tools/                  # 45+ tools (file, edit, code_search, shell, git, web, github, image, ...)
 ├── app/
 │   ├── api/
 │   │   ├── chat/route.ts       # SSE chat endpoint (accepts mode)
@@ -125,6 +125,23 @@ Open the **Settings** sheet (gear icon, top-right) and fill in:
 Settings persist in `localStorage`; they never leave the browser except as
 part of an API request to your chosen provider.
 
+### Optional environment variables
+
+Set these on the server (e.g. in `.env.local`) to enable extra capabilities:
+
+| Variable | Purpose |
+|----------|---------|
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` / `SERPAPI_API_KEY` | Use a real search API for `web_search` instead of the (fragile) DuckDuckGo HTML fallback. The first one set wins; the scraper is always kept as a last resort. |
+| `EMBEDDINGS_API_KEY` / `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_MODEL` | Enable **semantic RAG**. With a key set, project chunks are embedded and retrieved with a hybrid semantic + BM25 score; without one, retrieval falls back to BM25 (still better than the old TF-cosine). Base URL defaults to OpenAI, model to `text-embedding-3-small`. |
+| `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error` \| `silent`. Controls the structured JSON request logs. |
+| `WORKSPACE_ROOT` | Override the agent's sandboxed workspace directory. |
+
+The agent also accepts a per-session **cost budget** (`costBudgetUsd` in
+`AgentConfig`): when the estimated spend crosses it, the loop stops gracefully
+instead of running up an unbounded bill. Every session now reports an
+`estimatedCostUsd` in its performance stats, and a **loop guard** halts the
+agent if it repeats the same tool call with identical arguments.
+
 ## Testing the new features
 
 ### 1. Intent classifier / fast path
@@ -185,7 +202,18 @@ in `skill_detector.ts` and add a detection rule.
 npm run build       # production build (standalone output)
 npm start           # serve the standalone build with Bun
 npm run lint        # ESLint
+npm test            # Vitest unit tests
+npm run eval        # run the agent eval suite (needs EVAL_API_KEY / OPENAI_API_KEY)
 ```
+
+## Effectiveness evals
+
+`evals/` is a small benchmark that runs the agent over representative tasks
+(math, file I/O, code search, web research, a multi-step build) and reports
+**completion rate, tool-success rate, tokens, cost, and latency** — correctness
+is judged on the end state (tool usage / output), not text similarity. Set
+`EVAL_API_KEY` (and optionally `EVAL_BASE_URL` / `EVAL_MODEL`) or
+`OPENAI_API_KEY`, then run `npm run eval`. Without credentials it exits cleanly.
 
 ## License
 

@@ -1,5 +1,6 @@
 import { runAgent, type AgentConfig, type AgentMode } from '@/agent';
 import { healthMonitor } from '@/agent/reliability';
+import { childLogger, newRequestId } from '@/lib/logger';
 import type { ChatMessage, AppSettings } from '@/types';
 
 /**
@@ -99,6 +100,16 @@ export async function POST(request: Request) {
 
   const encoder = new TextEncoder();
 
+  // Correlation id ties every log line for this request together.
+  const requestId = newRequestId();
+  const log = childLogger(requestId);
+  log.info('chat request received', {
+    model: api.model,
+    mode: body.mode ?? 'auto',
+    messageCount: messages.length,
+    hasGithub: !!settings.githubToken,
+  });
+
   const stream = new ReadableStream({
     async start(controller) {
       // Helper to push an SSE event.
@@ -155,6 +166,12 @@ export async function POST(request: Request) {
           sendEvent({ type: 'progress', data: { current, total, description } });
         },
         onPerformance(stats) {
+          log.info('session performance', {
+            toolCalls: stats.totalToolCalls,
+            totalTokens: stats.totalTokens,
+            estimatedCostUsd: stats.estimatedCostUsd,
+            durationMs: stats.sessionDuration,
+          });
           sendEvent({ type: 'performance', data: stats });
         },
         onSkillDetected(skill) {
@@ -184,6 +201,7 @@ export async function POST(request: Request) {
           // Record failed API call for health monitoring
           const duration = Date.now() - apiCallStart;
           healthMonitor.recordAPICall(duration, false, error);
+          log.error('agent error', { error });
           sendEvent({ type: 'error', data: error });
         },
       };

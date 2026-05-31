@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ImageApiConfig } from './generate-image';
 
 // Import all tool implementations
@@ -30,6 +31,10 @@ import { extractZipTool } from './extract-zip';
 import { validateJsonTool } from './validate-json';
 import { regexTestTool } from './regex-test';
 import { getCurrentTimeTool } from './get-current-time';
+import { codeSearchTool } from './code-search';
+import { editFileTool } from './edit-file';
+import { shellExecTool } from './shell-exec';
+import { gitStatusTool, gitDiffTool, gitLogTool } from './git-tools';
 
 import { createGithubAuthCheckTool } from './github/github_auth_check';
 import { createGithubListReposTool } from './github/github_list_repos';
@@ -78,6 +83,10 @@ export { extractZipTool } from './extract-zip';
 export { validateJsonTool } from './validate-json';
 export { regexTestTool } from './regex-test';
 export { getCurrentTimeTool } from './get-current-time';
+export { codeSearchTool } from './code-search';
+export { editFileTool } from './edit-file';
+export { shellExecTool } from './shell-exec';
+export { gitStatusTool, gitDiffTool, gitLogTool } from './git-tools';
 
 export { createGithubAuthCheckTool } from './github/github_auth_check';
 export { createGithubListReposTool } from './github/github_list_repos';
@@ -135,6 +144,12 @@ export function getAllTools(imageApiConfig?: ImageApiConfig, githubToken?: strin
     validateJsonTool,
     regexTestTool,
     getCurrentTimeTool,
+    codeSearchTool,
+    editFileTool,
+    shellExecTool,
+    gitStatusTool,
+    gitDiffTool,
+    gitLogTool,
   ];
 
   // Only include GitHub tools when a token is provided
@@ -161,115 +176,32 @@ export function getAllTools(imageApiConfig?: ImageApiConfig, githubToken?: strin
 
 
 /**
- * Convert a Zod schema to a JSON Schema object for LLM function calling.
+ * Convert a tool's Zod schema to a JSON Schema object for LLM function calling.
+ *
+ * Uses Zod v4's native `z.toJSONSchema()`, which preserves field descriptions
+ * (`.describe(...)`), nested objects, arrays, enums and defaults — none of which
+ * the previous hand-rolled converter handled. Richer schemas mean the model
+ * picks the right tool with the right arguments far more often.
+ *
+ * Falls back gracefully when the schema is already plain JSON Schema, or when
+ * conversion throws for an unexpected shape.
  */
-function zodSchemaToJsonSchema(schema: unknown): Record<string, unknown> {
+function toJsonSchema(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object') {
+    return { type: 'object', properties: {} };
+  }
+
+  // Already a JSON Schema (LangChain accepts plain objects too) — pass through.
+  if (!(schema instanceof z.ZodType)) {
+    const maybe = schema as Record<string, unknown>;
+    if (maybe.type || maybe.properties) return maybe;
+    return { type: 'object', properties: {} };
+  }
+
   try {
-    const s = schema as {
-      _def?: {
-        shape?: () => Record<string, { _def?: { typeName?: string; innerType?: unknown; values?: unknown[]; optional?: unknown } }> | Record<string, unknown>;
-        typeName?: string;
-      };
-    };
-
-    if (!s?._def) return { type: 'object', properties: {} };
-
-    let shape: Record<string, unknown>;
-    if (typeof s._def.shape === 'function') {
-      shape = s._def.shape() as Record<string, unknown>;
-    } else if (s._def.shape && typeof s._def.shape === 'object') {
-      shape = s._def.shape as Record<string, unknown>;
-    } else {
-      return { type: 'object', properties: {} };
-    }
-
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-
-    for (const [key, value] of Object.entries(shape)) {
-      const fieldDef = value as {
-        _def?: {
-          typeName?: string;
-          innerType?: { _def?: { typeName?: string; values?: unknown[] } };
-          values?: unknown[];
-          optional?: boolean;
-          description?: string;
-        };
-        description?: string;
-      };
-
-      if (fieldDef?._def) {
-        const fieldSchema: Record<string, unknown> = {};
-
-        switch (fieldDef._def.typeName) {
-          case 'ZodString':
-            fieldSchema.type = 'string';
-            break;
-          case 'ZodNumber':
-            fieldSchema.type = 'number';
-            break;
-          case 'ZodBoolean':
-            fieldSchema.type = 'boolean';
-            break;
-          case 'ZodArray':
-            fieldSchema.type = 'array';
-            if (fieldDef._def.innerType?._def) {
-              const innerType = fieldDef._def.innerType._def;
-              if (innerType.typeName === 'ZodString') fieldSchema.items = { type: 'string' };
-              else if (innerType.typeName === 'ZodNumber') fieldSchema.items = { type: 'number' };
-              else if (innerType.typeName === 'ZodObject') fieldSchema.items = zodSchemaToJsonSchema(fieldDef._def.innerType);
-            }
-            break;
-          case 'ZodOptional':
-            // For optional fields, unwrap inner type
-            if (fieldDef._def.innerType?._def) {
-              const inner = fieldDef._def.innerType._def;
-              switch (inner.typeName) {
-                case 'ZodString': fieldSchema.type = 'string'; break;
-                case 'ZodNumber': fieldSchema.type = 'number'; break;
-                case 'ZodBoolean': fieldSchema.type = 'boolean'; break;
-                default: fieldSchema.type = 'string';
-              }
-            } else {
-              fieldSchema.type = 'string';
-            }
-            break;
-          case 'ZodDefault':
-            if (fieldDef._def.innerType?._def) {
-              const inner = fieldDef._def.innerType._def;
-              switch (inner.typeName) {
-                case 'ZodString': fieldSchema.type = 'string'; break;
-                case 'ZodNumber': fieldSchema.type = 'number'; break;
-                case 'ZodBoolean': fieldSchema.type = 'boolean'; break;
-                default: fieldSchema.type = 'string';
-              }
-            } else {
-              fieldSchema.type = 'string';
-            }
-            break;
-          case 'ZodEnum':
-            fieldSchema.type = 'string';
-            if (fieldDef._def.values) {
-              fieldSchema.enum = fieldDef._def.values;
-            }
-            break;
-          default:
-            fieldSchema.type = 'string';
-        }
-
-        properties[key] = fieldSchema;
-
-        if (!fieldDef._def.optional && fieldDef._def.typeName !== 'ZodOptional' && fieldDef._def.typeName !== 'ZodDefault') {
-          required.push(key);
-        }
-      }
-    }
-
-    return {
-      type: 'object',
-      properties,
-      ...(required.length > 0 ? { required } : {}),
-    };
+    // `io: 'input'` makes optional/defaulted fields non-required, matching how
+    // an LLM supplies arguments.
+    return z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>;
   } catch {
     return { type: 'object', properties: {} };
   }
@@ -284,8 +216,6 @@ export function getToolDefinitions(imageApiConfig?: ImageApiConfig, githubToken?
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: (tool as unknown as { schema?: { _def?: { shape?: Record<string, unknown> } } }).schema
-      ? zodSchemaToJsonSchema((tool as unknown as { schema?: unknown }).schema)
-      : {},
+    parameters: toJsonSchema((tool as unknown as { schema?: unknown }).schema),
   }));
 }

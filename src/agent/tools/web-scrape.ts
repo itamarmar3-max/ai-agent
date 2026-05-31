@@ -1,6 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import * as cheerio from 'cheerio';
+import { windowText } from './_output';
 
 /**
  * web_scrape - Scrape and extract text content from any URL.
@@ -17,7 +18,7 @@ function isPrivateUrl(rawUrl: string): boolean {
 }
 
 export const webScrapeTool = tool(
-  async ({ url }: { url: string }): Promise<string> => {
+  async ({ url, offset, maxChars }: { url: string; offset?: number; maxChars?: number }): Promise<string> => {
     if (isPrivateUrl(url)) {
       return `Error: Requests to private/internal network addresses are not allowed.`;
     }
@@ -58,16 +59,14 @@ export const webScrapeTool = tool(
         .replace(/\n\s*\n/g, '\n\n')
         .trim();
 
-      // Truncate if too long (max ~50k chars)
-      if (text.length > 50000) {
-        text = text.slice(0, 50000) + '\n\n... [Content truncated at 50,000 characters]';
-      }
-
       if (!text || text.length < 10) {
         return `Could not extract meaningful text content from ${url}. The page may be dynamically rendered or empty.`;
       }
 
-      return `Content from ${url}:\n\n${text}`;
+      // Page large pages instead of hard-cutting at a fixed size, so the model
+      // can keep reading via `offset` when it needs more.
+      const windowed = windowText(text, { offset, maxChars: maxChars ?? 50_000, unit: 'page' });
+      return `Content from ${url}:\n\n${windowed}`;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return `Error scraping URL: ${msg}`;
@@ -76,9 +75,14 @@ export const webScrapeTool = tool(
   {
     name: 'web_scrape',
     description:
-      'Scrape and extract text content from any URL. Returns the full clean text content.',
+      'Fetch a URL and extract its clean, readable text (scripts, nav, ads removed). ' +
+      'Use after web_search to read the full content of a specific result. Returns ~50k ' +
+      'characters per call; when truncated, call again with the suggested `offset`. ' +
+      'Private/internal network addresses are blocked.',
     schema: z.object({
-      url: z.string().url().describe('The URL to scrape'),
+      url: z.string().url().describe('The absolute URL to scrape (must be http/https)'),
+      offset: z.number().int().min(0).optional().describe('Character offset to resume from for long pages. Defaults to 0.'),
+      maxChars: z.number().int().min(1).optional().describe('Maximum characters to return this call. Defaults to ~50,000.'),
     }),
   }
 );

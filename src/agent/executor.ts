@@ -29,14 +29,16 @@ export interface ToolExecutionResult {
 const MAX_CONCURRENCY = 10;
 
 const SIMPLE_TOOLS = ['math_eval', 'uuid_generate', 'datetime_info', 'get_current_time'];
-const FILE_TOOLS = ['read_file', 'write_file', 'list_files', 'delete_file', 'generate_file_structure'];
+const FILE_TOOLS = ['read_file', 'write_file', 'list_files', 'delete_file', 'generate_file_structure', 'edit_file', 'code_search'];
 const WEB_TOOLS = ['web_search', 'web_scrape', 'url_metadata', 'scholar_search'];
 const CODE_TOOLS = ['run_javascript'];
+const LONG_TOOLS = ['shell_exec'];
 
 const TIMEOUT_SIMPLE = 10_000;
 const TIMEOUT_FILE = 30_000;
 const TIMEOUT_WEB = 20_000;
 const TIMEOUT_CODE = 15_000;
+const TIMEOUT_LONG = 300_000;
 const TIMEOUT_DEFAULT = 20_000;
 
 // ---------------------------------------------------------------------------
@@ -44,6 +46,7 @@ const TIMEOUT_DEFAULT = 20_000;
 // ---------------------------------------------------------------------------
 
 function getToolTimeoutMs(toolName: string): number {
+  if (LONG_TOOLS.includes(toolName)) return TIMEOUT_LONG;
   if (SIMPLE_TOOLS.includes(toolName)) return TIMEOUT_SIMPLE;
   if (FILE_TOOLS.includes(toolName)) return TIMEOUT_FILE;
   if (WEB_TOOLS.includes(toolName)) return TIMEOUT_WEB;

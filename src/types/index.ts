@@ -40,6 +40,9 @@ export interface PerformanceStats {
   averageResponseTime: number;
   toolUsageCounts: Record<string, number>;
   sessionStartTime: number;
+  estimatedCostUsd?: number;   // NEW: USD cost estimate from token usage
+  promptTokens?: number;       // NEW: input/prompt tokens
+  completionTokens?: number;   // NEW: output/completion tokens
 }
 
 export interface ChatMessage {
