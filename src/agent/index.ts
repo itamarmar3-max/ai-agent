@@ -247,14 +247,32 @@ export async function runAgent(
   }
 
   // ---- 2. Create plan (only when intent calls for it) ---------------------
+  // In deep mode we spend one cheap LLM call on a real plan (robust to
+  // paraphrasing and non-English requests); elsewhere we use the zero-latency
+  // heuristic planner. The LLM planner falls back to the heuristic on failure.
   let plan: Plan | undefined;
   if (enablePlanning) {
-    try {
-      const planner = await import('./planner');
-      plan = planner.createPlan(lastUserMessage, [...getAllTools().map(t => t.name)]);
-      config.onPlan?.(plan);
-    } catch {
-      // non-critical
+    const toolNames = [...getAllTools(config.imageApiConfig, config.githubToken).map(t => t.name)];
+    if (mode === 'deep') {
+      try {
+        const { createPlanWithLLM } = await import('./planner_llm');
+        plan = await createPlanWithLLM(lastUserMessage, toolNames, {
+          apiKey: config.apiKey,
+          baseUrl: config.baseUrl,
+          model: config.model,
+        });
+        config.onPlan?.(plan);
+      } catch {
+        // non-critical
+      }
+    } else {
+      try {
+        const planner = await import('./planner');
+        plan = planner.createPlan(lastUserMessage, toolNames);
+        config.onPlan?.(plan);
+      } catch {
+        // non-critical
+      }
     }
   }
 
@@ -417,6 +435,7 @@ export async function runAgent(
   let errorHandlerModule: {
     executeWithRetry: (fn: () => Promise<string>, config?: any) => Promise<{ output: string; retries: number }>;
     logError: (error: any) => Promise<void>;
+    getToolTimeout: (toolName: string) => number;
   } | null = null;
 
   let reflectionModule: {
@@ -644,11 +663,12 @@ export async function runAgent(
 
           try {
             // Execute with retry if error_handler is available
+            const toolTimeout = errorHandlerModule?.getToolTimeout?.(toolName) ?? 20_000;
             if (errorHandlerModule) {
               const retryResult = await errorHandlerModule.executeWithRetry(
                 async () => {
                   const execution = executorModule
-                    ? await executorModule.executeToolWithTimeout(tool, toolInput, 20_000)
+                    ? await executorModule.executeToolWithTimeout(tool, toolInput, toolTimeout)
                     : {
                         output: await tool.invoke(toolInput).then((r) => typeof r === 'string' ? r : JSON.stringify(r)),
                       };
@@ -663,7 +683,7 @@ export async function runAgent(
             } else {
               // Original behavior: no retry
               if (executorModule) {
-                const execution = await executorModule.executeToolWithTimeout(tool, toolInput, 20_000);
+                const execution = await executorModule.executeToolWithTimeout(tool, toolInput, toolTimeout);
                 outputStr = execution.output;
               } else {
                 const output = await tool.invoke(toolInput);

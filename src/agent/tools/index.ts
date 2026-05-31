@@ -31,6 +31,10 @@ import { extractZipTool } from './extract-zip';
 import { validateJsonTool } from './validate-json';
 import { regexTestTool } from './regex-test';
 import { getCurrentTimeTool } from './get-current-time';
+import { codeSearchTool } from './code-search';
+import { editFileTool } from './edit-file';
+import { shellExecTool } from './shell-exec';
+import { gitStatusTool, gitDiffTool, gitLogTool } from './git-tools';
 
 import { createGithubAuthCheckTool } from './github/github_auth_check';
 import { createGithubListReposTool } from './github/github_list_repos';
@@ -79,6 +83,10 @@ export { extractZipTool } from './extract-zip';
 export { validateJsonTool } from './validate-json';
 export { regexTestTool } from './regex-test';
 export { getCurrentTimeTool } from './get-current-time';
+export { codeSearchTool } from './code-search';
+export { editFileTool } from './edit-file';
+export { shellExecTool } from './shell-exec';
+export { gitStatusTool, gitDiffTool, gitLogTool } from './git-tools';
 
 export { createGithubAuthCheckTool } from './github/github_auth_check';
 export { createGithubListReposTool } from './github/github_list_repos';
@@ -136,6 +144,12 @@ export function getAllTools(imageApiConfig?: ImageApiConfig, githubToken?: strin
     validateJsonTool,
     regexTestTool,
     getCurrentTimeTool,
+    codeSearchTool,
+    editFileTool,
+    shellExecTool,
+    gitStatusTool,
+    gitDiffTool,
+    gitLogTool,
   ];
 
   // Only include GitHub tools when a token is provided
